@@ -13,16 +13,11 @@ func main() {
 	}
 
 	s.BroadcastHello()
-	stopCh := make(chan struct{})
 
-	// Start the broadcast listener in a goroutine
-	go s.StartBroadcastListener(stopCh)
+	go s.StartBroadcastListener()
+	go s.StartUniCastSender()
+	go s.StartUniCastListener()
 
-	// Simulate some other work
-	time.Sleep(5 * time.Second)
-
-	// Signal the listener to stop and wait for cleanup
-	close(stopCh)
-	time.Sleep(1 * time.Second)
-
+	time.Sleep(2 * time.Second)
+	s.Shutdown()
 }

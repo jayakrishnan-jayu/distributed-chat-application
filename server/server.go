@@ -6,14 +6,43 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"time"
+	"sync"
+
+	"github.com/google/uuid"
 )
 
-const BROADCAST_PORT = ":5000"
+const BROADCAST_S_PORT = ":5000"
+const BROADCAST_L_PORT = ":5001"
+
+const UNI_S_PORT = ":5002"
+const UNI_L_PORT = ":5003"
+
+const ROM_S_PORT = ":5004"
+const ROM_L_PORT = ":5005"
+
+const MIN_SERVERS = 3
+
+type State int
+
+const (
+	INIT State = iota
+	LEADER
+	FOLLOWER
+	ELECTION
+)
 
 type Server struct {
-	ip          string
-	broadcastIP string
+	mu              sync.Mutex
+	id              string
+	ip              string
+	broadcast       string
+	state           State
+	ru              *reliableUnicast
+	broadConn       net.PacketConn
+	peers           map[string]string
+	discoveredPeers map[string]bool
+	quit            chan interface{}
+	newServer       chan string
 }
 
 func LocalIP() (*net.IPNet, error) {
@@ -40,6 +69,7 @@ func BroadcastIP(ipv4 *net.IPNet) (net.IP, error) {
 }
 
 func NewServer() (*Server, error) {
+	id := uuid.New()
 	ip, err := LocalIP()
 	if err != nil {
 		return &Server{}, err
@@ -48,59 +78,128 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return &Server{}, err
 	}
-	return &Server{ip.String(), broadcast.String()}, nil
+
+	s := new(Server)
+	s.state = INIT
+	s.id = id.String()
+	s.ip = ip.String()
+	s.ru = NewReliableUnicast()
+	s.broadcast = broadcast.String()
+	s.peers = make(map[string]string)
+	s.discoveredPeers = make(map[string]bool)
+	s.newServer = make(chan string, 5)
+	s.quit = make(chan interface{})
+
+	return s, nil
 }
 
-func (s *Server) StartBroadcastListener(stopCh <-chan struct{}) {
-	pc, err := net.ListenPacket("udp4", BROADCAST_PORT)
+func (s *Server) StartBroadcastListener() {
+	var err error
+
+	s.broadConn, err = net.ListenPacket("udp4", BROADCAST_L_PORT)
 	if err != nil {
 		log.Panic(err)
 	}
-	defer pc.Close()
+	defer s.broadConn.Close()
 
 	buf := make([]byte, 1024)
 
 	for {
-		select {
-		case <-stopCh:
-			log.Println("Broadcast listener shutting down.")
-			return
-		default:
-			// Set a read deadline to allow periodic checks of the stop channel
-			if err := pc.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
-				log.Printf("Failed to set read deadline: %v\n", err)
-			}
-
-			n, addr, err := pc.ReadFrom(buf)
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					// Timeout is expected; check the stop channel and continue
-					continue
-				}
+		n, addr, err := s.broadConn.ReadFrom(buf)
+		if err != nil {
+			select {
+			case <-s.quit:
+				log.Println("Broadcast Connection closed")
+				return
+			default:
 				log.Printf("Error reading from connection: %v\n", err)
-				continue
 			}
+		}
+		udpAddr, ok := addr.(*net.UDPAddr)
+		if !ok {
+			log.Printf("Unexpected address type: %T", addr)
+			continue
+		}
+		go s.connectNewPeer(string(buf[:n]), udpAddr.IP.String())
+	}
+}
 
-			log.Printf("Received from %s: %s\n", addr, buf[:n])
+func (s *Server) StartUniCastSender() {
+	for {
+		select {
+		case clientUUIDStr := <-s.newServer:
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			ip := s.peers[clientUUIDStr]
+			log.Printf("sending message to %s from %s", ip, s.ip)
+			s.ru.SendMessage(ip, s.id, []byte("Hello"))
+
 		}
 	}
 }
 
+func (s *Server) StartUniCastListener() {
+	s.ru.StartListener()
+}
+
+func (s *Server) connectNewPeer(clientUUIDStr string, ip string) {
+	clientUUID, err := uuid.Parse(clientUUIDStr)
+	if err != nil {
+		log.Printf("Invalid UUID received from %s: %v\n", ip, err)
+		return
+	}
+	clientUUIDStr = clientUUID.String()
+	s.mu.Lock()
+	_, ok := s.peers[clientUUIDStr]
+	s.mu.Unlock()
+	if !ok {
+		log.Println("Adding new client ", ip)
+		s.mu.Lock()
+		s.peers[clientUUIDStr] = ip
+		s.discoveredPeers[clientUUIDStr] = false
+		s.mu.Unlock()
+		s.newServer <- clientUUIDStr
+	}
+
+}
+
 func (s *Server) BroadcastHello() {
-	pc, err := net.ListenPacket("udp4", BROADCAST_PORT)
+	SendUDP(s.broadcast, BROADCAST_S_PORT, BROADCAST_L_PORT, []byte(s.id))
+}
+
+func (s *Server) Shutdown() {
+	close(s.quit)
+	s.broadConn.Close()
+	s.ru.Shutdown()
+
+}
+
+func SendUDP(ip string, fromPort string, toPort string, data []byte) {
+	pc, err := net.ListenPacket("udp4", fromPort)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer pc.Close()
 
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s%s", s.broadcastIP, BROADCAST_PORT))
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s%s", ip, toPort))
 	if err != nil {
 		log.Panic(err)
 	}
 
-	_, err = pc.WriteTo([]byte(fmt.Sprintf("hello from %s", s.ip)), addr)
+	_, err = pc.WriteTo(data, addr)
 	if err != nil {
 		log.Panic(err)
 	}
-	log.Println("Sent hello")
 }
+
+// func (*Server) getRandomUDPPort() (*net.PacketConn, int, error) {
+// 	for i := 0; i < 10; i++ {
+// 		port := rand.Intn(65535-49152+1) + 49152
+// 		addr := fmt.Sprintf(":%d", port)
+// 		conn, err := net.ListenPacket("udp4", addr)
+// 		if err == nil {
+// 			return &conn, port, nil
+// 		}
+// 	}
+// 	return nil, 0, errors.New("coulb not find a free port after multiple attempts")
+// }
