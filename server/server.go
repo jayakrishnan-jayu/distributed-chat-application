@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -14,9 +16,41 @@ type Server struct {
 	broadcastIP string
 }
 
-func NewServer(ip string, broadcastIP string) *Server {
-	return &Server{ip, broadcastIP}
+func LocalIP() (*net.IPNet, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet, nil
+		}
+	}
+	return nil, errors.New("IP not found")
 }
+
+func BroadcastIP(ipv4 *net.IPNet) (net.IP, error) {
+	if ipv4.IP.To4() == nil {
+		return net.IP{}, errors.New("does not support IPv6 addresses.")
+	}
+	ip := make(net.IP, len(ipv4.IP.To4()))
+	binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(ipv4.IP.To4())|^binary.BigEndian.Uint32(net.IP(ipv4.Mask).To4()))
+	return ip, nil
+}
+
+func NewServer() (*Server, error) {
+	ip, err := LocalIP()
+	if err != nil {
+		return &Server{}, err
+	}
+	broadcast, err := BroadcastIP(ip)
+	if err != nil {
+		return &Server{}, err
+	}
+	return &Server{ip.String(), broadcast.String()}, nil
+}
+
 func (s *Server) StartBroadcastListener(stopCh <-chan struct{}) {
 	pc, err := net.ListenPacket("udp4", BROADCAST_PORT)
 	if err != nil {
@@ -51,22 +85,6 @@ func (s *Server) StartBroadcastListener(stopCh <-chan struct{}) {
 		}
 	}
 }
-
-// func (*Server) StartBroadcastListener() {
-// 	pc, err := net.ListenPacket("udp4", BROADCAST_PORT)
-// 	if err != nil {
-// 		log.Panic(err)
-// 	}
-// 	defer pc.Close()
-//
-// 	buf := make([]byte, 1024)
-// 	n, addr, err := pc.ReadFrom(buf)
-// 	if err != nil {
-// 		log.Panic(err)
-// 	}
-//
-// 	log.Printf("%s sent this: %s\n", addr, buf[:n])
-// }
 
 func (s *Server) BroadcastHello() {
 	pc, err := net.ListenPacket("udp4", BROADCAST_PORT)
