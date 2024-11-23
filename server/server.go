@@ -89,6 +89,7 @@ func NewServer() (*Server, error) {
 	s.discoveredPeers = make(map[string]bool)
 	s.newServer = make(chan string, 5)
 	s.quit = make(chan interface{})
+	log.Println(s.ip)
 
 	return s, nil
 }
