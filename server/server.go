@@ -1,14 +1,17 @@
 package server
 
 import (
-	"encoding/binary"
-	"errors"
+	"dummy-rom/server/message"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	"math/rand/v2"
 )
 
 const BROADCAST_S_PORT = ":5000"
@@ -32,40 +35,22 @@ const (
 )
 
 type Server struct {
-	mu              sync.Mutex
-	id              string
-	ip              string
-	broadcast       string
-	state           State
-	ru              *reliableUnicast
-	broadConn       net.PacketConn
-	peers           map[string]string
-	discoveredPeers map[string]bool
-	quit            chan interface{}
-	newServer       chan string
-}
-
-func LocalIP() (*net.IPNet, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, addr := range addrs {
-		ipNet, ok := addr.(*net.IPNet)
-		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-			return ipNet, nil
-		}
-	}
-	return nil, errors.New("IP not found")
-}
-
-func BroadcastIP(ipv4 *net.IPNet) (net.IP, error) {
-	if ipv4.IP.To4() == nil {
-		return net.IP{}, errors.New("does not support IPv6 addresses.")
-	}
-	ip := make(net.IP, len(ipv4.IP.To4()))
-	binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(ipv4.IP.To4())|^binary.BigEndian.Uint32(net.IP(ipv4.Mask).To4()))
-	return ip, nil
+	mu                sync.Mutex
+	id                string
+	ip                string
+	leaderID          string
+	broadcast         string
+	state             State
+	logger            *log.Logger
+	ru                *reliableUnicast
+	ruMsgChan         chan *UnicastMessage
+	broadConn         net.PacketConn
+	peers             map[string]string
+	discoveredPeers   map[string]bool
+	stopBroadcasting  chan struct{}
+	broadcastDoneChan chan struct{}
+	quit              chan interface{}
+	newServer         chan string
 }
 
 func NewServer() (*Server, error) {
@@ -79,50 +64,31 @@ func NewServer() (*Server, error) {
 		return &Server{}, err
 	}
 
+	ruMsgChan := make(chan *UnicastMessage, 5)
+
 	s := new(Server)
 	s.state = INIT
 	s.id = id.String()
-	s.ip = ip.String()
-	s.ru = NewReliableUnicast()
+	s.ip = strings.Split(ip.String(), "/")[0]
+	s.leaderID = ""
+	s.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%s] ", s.ip, s.id[:4]), log.Ltime)
+	s.ru = NewReliableUnicast(ruMsgChan)
+	s.ruMsgChan = ruMsgChan
 	s.broadcast = broadcast.String()
 	s.peers = make(map[string]string)
 	s.discoveredPeers = make(map[string]bool)
 	s.newServer = make(chan string, 5)
 	s.quit = make(chan interface{})
-	log.Println(s.ip)
+
+	s.peers[s.id] = s.ip
+
+	s.logger.Println("Current ID: ", s.id)
 
 	return s, nil
 }
 
-func (s *Server) StartBroadcastListener() {
-	var err error
-
-	s.broadConn, err = net.ListenPacket("udp4", BROADCAST_L_PORT)
-	if err != nil {
-		log.Panic(err)
-	}
-	defer s.broadConn.Close()
-
-	buf := make([]byte, 1024)
-
-	for {
-		n, addr, err := s.broadConn.ReadFrom(buf)
-		if err != nil {
-			select {
-			case <-s.quit:
-				log.Println("Broadcast Connection closed")
-				return
-			default:
-				log.Printf("Error reading from connection: %v\n", err)
-			}
-		}
-		udpAddr, ok := addr.(*net.UDPAddr)
-		if !ok {
-			log.Printf("Unexpected address type: %T", addr)
-			continue
-		}
-		go s.connectNewPeer(string(buf[:n]), udpAddr.IP.String())
-	}
+func (s *Server) Debug() {
+	s.logger.Printf("\nUUID: %s\nIP: %s\nPeers: %v\nState: %v", s.id, s.ip, s.peers, s.state)
 }
 
 func (s *Server) StartUniCastSender() {
@@ -130,42 +96,294 @@ func (s *Server) StartUniCastSender() {
 		select {
 		case clientUUIDStr := <-s.newServer:
 			s.mu.Lock()
-			defer s.mu.Unlock()
 			ip := s.peers[clientUUIDStr]
-			log.Printf("sending message to %s from %s", ip, s.ip)
+			s.logger.Printf("sending message to %s from %s", ip, s.ip)
 			s.ru.SendMessage(ip, s.id, []byte("Hello"))
+			s.mu.Unlock()
 
 		}
 	}
 }
 
 func (s *Server) StartUniCastListener() {
+	go s.startUnicastMessageListener()
 	s.ru.StartListener()
 }
 
-func (s *Server) connectNewPeer(clientUUIDStr string, ip string) {
-	clientUUID, err := uuid.Parse(clientUUIDStr)
-	if err != nil {
-		log.Printf("Invalid UUID received from %s: %v\n", ip, err)
+func (s *Server) startUnicastMessageListener() {
+	for {
+		select {
+		case <-s.quit:
+			s.logger.Println("Quiting Unicast message listener")
+			return
+		case msg := <-s.ruMsgChan:
+			unicastMessage, err := message.Decode(msg.Message)
+			if err != nil {
+				log.Panic(err)
+			}
+			switch unicastMessage.Type {
+			case message.ConnectToLeader:
+				// when a new node listens to broadcast and sends a messsage
+				// to connect
+				// add node to peers
+
+				s.mu.Lock()
+				s.peers[msg.uuid] = msg.Ip
+				peerIds := make([]string, 0, len(s.peers))
+				peerIps := make([]string, 0, len(s.peers))
+				id := s.id
+				ownIP := s.ip
+				for uuid, ip := range s.peers {
+					peerIds = append(peerIds, uuid)
+					peerIps = append(peerIps, ip)
+				}
+				s.mu.Unlock()
+
+				encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
+				// send active peers
+				log.Println("Sending active peers")
+				for _, peerIp := range peerIps {
+					if peerIp == ownIP {
+						continue
+					}
+					go func(ip string) {
+						send := s.ru.SendMessage(ip, id, encodedMessage)
+						if !send {
+							s.logger.Println("faild to send peer info to", ip)
+							s.handleDeadServer(msg.uuid, ip)
+							return
+						}
+					}(peerIp)
+					break
+				}
+
+			case message.PeerInfo:
+				s.logger.Println("got peer info from", msg.Ip)
+				if len(unicastMessage.PeerIds) != len(unicastMessage.PeerIps) {
+					s.logger.Fatal("message.peerinfo message invalid length")
+				}
+
+				s.mu.Lock()
+				id := s.id
+				higherNodeExists := false
+				for index, uuid := range unicastMessage.PeerIds {
+					s.peers[uuid] = unicastMessage.PeerIps[index]
+					if uuid != msg.uuid && uuid > msg.uuid {
+						higherNodeExists = true
+					}
+				}
+
+				if id > msg.uuid || higherNodeExists {
+					s.StopBroadcasting()
+					s.mu.Unlock()
+					go s.StartElection()
+					break
+				}
+				s.state = FOLLOWER
+				s.leaderID = msg.uuid
+				s.mu.Unlock()
+				break
+
+			case message.Election:
+				s.logger.Println("Got election message from", msg.Ip)
+				s.mu.Lock()
+				id := s.id
+				s.mu.Unlock()
+
+				if s.id > msg.uuid {
+					// send alive
+					s.logger.Println("sending alive")
+					encodedData := message.NewElectionAliveMessage()
+					send := s.ru.SendMessage(msg.Ip, id, encodedData)
+					if !send {
+						s.handleDeadServer(msg.uuid, msg.Ip)
+						log.Println("failed to send alive message to", msg.Ip)
+					}
+					go s.StartElection()
+					break
+				}
+				// if node is higher, then stop broadcasting
+				s.StopBroadcasting()
+				s.mu.Lock()
+				s.state = ELECTION
+				s.mu.Unlock()
+				// wait 2 seconds, then check if we are a follower, if we are not,
+				// start the election again
+				go func() {
+					time.Sleep(2 * time.Second)
+					s.mu.Lock()
+					if s.state != FOLLOWER {
+						s.StartElection()
+					}
+				}()
+				break
+			case message.ElectionAlive:
+				s.logger.Printf("got election alive message from %s, waitng for victory message", msg.Ip)
+				go func() {
+					time.Sleep(2)
+					s.mu.Lock()
+					if s.state == ELECTION {
+						s.discoveredPeers[msg.uuid] = true
+					}
+					s.mu.Unlock()
+				}()
+				break
+
+			case message.ElectionVictory:
+				s.logger.Println("got election victory from", msg.Ip)
+				s.mu.Lock()
+				s.state = FOLLOWER
+				s.leaderID = msg.uuid
+				s.StopBroadcasting()
+				s.mu.Unlock()
+				break
+			}
+			s.logger.Println(unicastMessage.Type)
+		}
+	}
+}
+
+func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
+	data := message.NewConnectToLeaderMessage()
+	send := s.ru.SendMessage(leaderIP, id, data)
+	if !send {
+		s.logger.Println("Failed to connect to leader")
+
+		// TODO: delete all buffered messages and frame counts in reliable unicast
+		// TODO: figure out how to handle node failure and recovery
+		s.handleDeadServer(leaderID, leaderIP)
+		s.mu.Lock()
+		s.leaderID = ""
+		s.state = INIT
+		s.mu.Unlock()
+
+		// if the server node is unreachable, restart the init
+		s.StartInit()
 		return
 	}
-	clientUUIDStr = clientUUID.String()
 	s.mu.Lock()
-	_, ok := s.peers[clientUUIDStr]
+	s.discoveredPeers[leaderIP] = true
 	s.mu.Unlock()
-	if !ok {
-		log.Println("Adding new client ", ip)
-		s.mu.Lock()
-		s.peers[clientUUIDStr] = ip
-		s.discoveredPeers[clientUUIDStr] = false
-		s.mu.Unlock()
-		s.newServer <- clientUUIDStr
+	s.logger.Println("connect message send", leaderIP)
+}
+
+// Initlize server
+func (s *Server) StartInit() {
+	s.logger.Println("StartInit")
+	s.mu.Lock()
+	s.StopBroadcasting()
+	s.leaderID = ""
+	s.state = INIT
+	s.mu.Unlock()
+	// wait for broadcasts from other leader nodes
+	// Wait for a random time between 150ms and 300ms
+	randomDelay := time.Duration(rand.IntN(351)+50) * time.Millisecond
+	time.Sleep(randomDelay)
+	s.mu.Lock()
+	// if the state is still on INIT, then there are no other nodes.
+	// then, start the server as a leader node
+	if s.state == INIT {
+		s.logger.Println("Assuming Leader")
+		s.state = LEADER
+		s.leaderID = s.id
+		go s.StartBroadcasting()
+
 	}
+	s.mu.Unlock()
 
 }
 
-func (s *Server) BroadcastHello() {
-	SendUDP(s.broadcast, BROADCAST_S_PORT, BROADCAST_L_PORT, []byte(s.id))
+func (s *Server) StartElection() {
+	// TODO
+	// bully algorithm
+	s.logger.Println("Starting election")
+	s.mu.Lock()
+	s.state = ELECTION
+	peers := make(map[string]string, len(s.peers))
+	for uuid, ip := range s.peers {
+		peers[uuid] = ip
+	}
+	id := s.id
+	s.discoveredPeers = make(map[string]bool)
+	s.mu.Unlock()
+	highestID := true
+
+	for uuid, ip := range peers {
+		if uuid > id || uuid == id {
+			continue
+		}
+		highestID = false
+		s.logger.Println(ip)
+		// send election message
+		// wait unitl a specified time for
+		go func(uuid string, ip string) {
+			s.logger.Println("sending election message to", ip)
+			encodedData := message.NewElectionMessage()
+			send := s.ru.SendMessage(ip, uuid, encodedData)
+			if !send {
+				s.logger.Println("failed to send election message to", ip)
+				s.handleDeadServer(uuid, ip)
+			}
+		}(uuid, ip)
+
+	}
+	if highestID {
+		// send out victory message
+		s.logger.Println("sending victory messages")
+		go s.SendElectionVictoryAndBecomeLeader()
+		return
+	}
+
+	// check if we got response from
+}
+
+func (s *Server) SendElectionVictoryAndBecomeLeader() {
+	var wg sync.WaitGroup
+	peers := make(map[string]string, len(s.peers))
+	s.mu.Lock()
+	for uuid, ip := range s.peers {
+		peers[uuid] = ip
+	}
+	ownID := s.id
+	s.mu.Unlock()
+
+	wg.Add(len(peers))
+
+	for uuid, ip := range peers {
+		if uuid == ownID {
+			continue
+		}
+		go func(uuid string, ip string) {
+			defer wg.Done()
+			victoryMessage := message.NewElectionVictoryMessage()
+			send := s.ru.SendMessage(ip, uuid, victoryMessage)
+			if !send {
+				// TODO: handle node failure
+				s.handleDeadServer(uuid, ip)
+				log.Println("failed to send victory message to", ip)
+			}
+
+		}(uuid, ip)
+	}
+	// wait until all vicotry messages are send and ack is received
+	wg.Wait()
+	s.logger.Println("Victory messages sent")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// if s.state == ELECTION {
+	s.leaderID = s.id
+	s.state = LEADER
+	s.logger.Println("ELECTED LEADER")
+	s.StartBroadcasting()
+	// return
+	// }
+}
+
+func (s *Server) handleDeadServer(uuid string, ip string) {
+	s.mu.Lock()
+	delete(s.peers, uuid)
+	s.mu.Unlock()
 }
 
 func (s *Server) Shutdown() {
@@ -173,24 +391,6 @@ func (s *Server) Shutdown() {
 	s.broadConn.Close()
 	s.ru.Shutdown()
 
-}
-
-func SendUDP(ip string, fromPort string, toPort string, data []byte) {
-	pc, err := net.ListenPacket("udp4", fromPort)
-	if err != nil {
-		log.Panic(err)
-	}
-	defer pc.Close()
-
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s%s", ip, toPort))
-	if err != nil {
-		log.Panic(err)
-	}
-
-	_, err = pc.WriteTo(data, addr)
-	if err != nil {
-		log.Panic(err)
-	}
 }
 
 // func (*Server) getRandomUDPPort() (*net.PacketConn, int, error) {
