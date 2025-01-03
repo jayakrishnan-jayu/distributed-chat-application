@@ -9,40 +9,44 @@ import (
 	"time"
 )
 
+const BROADCAST_S_PORT = ":5000"
+const BROADCAST_L_PORT = ":5001"
+
 type Broadcaster struct {
-	id                     string
-	ip                     string
-	broadcastIP            string
-	listenerPort           string
-	senderPort             string
-	handleBroadcastMessage func(string, string)
-	stopping               bool
-	stopChan               chan struct{}
-	logger                 *log.Logger
-	conn                   net.PacketConn
-	quit                   chan interface{}
-	mu                     sync.Mutex
-	waitGroup              sync.WaitGroup
+	id          string
+	ip          string
+	broadcastIP string
+	msgChan     chan<- *Message
+	stopping    bool
+	stopChan    chan struct{}
+	logger      *log.Logger
+	conn        net.PacketConn
+	quit        chan interface{}
+	mu          sync.Mutex
+	waitGroup   sync.WaitGroup
 }
 
-func NewBroadcaster(serverUUID string, serverIP string, broadcastIP string, listenerPort string, senderPort string, handleBroadcastMessage func(string, string)) *Broadcaster {
+type Message struct {
+	UUID string
+	IP   string
+}
+
+func NewBroadcaster(serverUUID string, serverIP string, broadcastIP string, msgChan chan<- *Message) *Broadcaster {
 	return &Broadcaster{
-		id:                     serverUUID,
-		ip:                     serverIP,
-		broadcastIP:            broadcastIP,
-		listenerPort:           listenerPort,
-		senderPort:             senderPort,
-		handleBroadcastMessage: handleBroadcastMessage,
-		logger:                 log.New(os.Stdout, fmt.Sprintf("[%s][%s][Broadcaster]", serverIP, serverUUID[:4]), log.Ltime),
-		quit:                   make(chan interface{}),
-		stopChan:               make(chan struct{}),
+		id:          serverUUID,
+		ip:          serverIP,
+		broadcastIP: broadcastIP,
+		msgChan:     msgChan,
+		logger:      log.New(os.Stdout, fmt.Sprintf("[%s][%s][Broadcaster]", serverIP, serverUUID[:4]), log.Ltime),
+		quit:        make(chan interface{}),
+		stopChan:    make(chan struct{}),
 	}
 }
 
 func (b *Broadcaster) StartListener() {
 	var err error
 
-	b.conn, err = net.ListenPacket("udp4", b.listenerPort)
+	b.conn, err = net.ListenPacket("udp4", BROADCAST_L_PORT)
 	if err != nil {
 		b.logger.Panic(err)
 	}
@@ -71,13 +75,14 @@ func (b *Broadcaster) StartListener() {
 		if udpAddr.IP.String() == b.ip {
 			continue
 		}
-
-		go b.handleBroadcastMessage(string(buf[:n]), udpAddr.IP.String())
+		log.Println("sending broadcast through channel")
+		b.msgChan <- &Message{string(buf[:n]), udpAddr.IP.String()}
+		log.Println("sending broadcast through channel done")
 	}
 }
 
 func (b *Broadcaster) Start() {
-	b.logger.Println("Start")
+	b.logger.Println("Starting")
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -99,13 +104,14 @@ func (b *Broadcaster) Start() {
 			case <-b.stopChan:
 				return
 			default:
-				SendUDP(b.broadcastIP, b.senderPort, b.listenerPort, []byte(b.id))
-				time.Sleep(1 * time.Second)
+				SendUDP(b.broadcastIP, BROADCAST_S_PORT, BROADCAST_L_PORT, []byte(b.id))
+				time.Sleep(300 * time.Millisecond)
 			}
 		}
 	}()
 }
 func (b *Broadcaster) Stop() {
+	b.logger.Println("Stopping")
 	b.mu.Lock()
 	if b.stopping {
 		b.mu.Unlock()
@@ -116,6 +122,7 @@ func (b *Broadcaster) Stop() {
 	b.mu.Unlock()
 
 	b.waitGroup.Wait()
+	b.logger.Println("Stopped")
 }
 
 func SendUDP(ip string, fromPort string, toPort string, data []byte) {
