@@ -1,17 +1,16 @@
 package server
 
 import (
+	"dummy-rom/server/broadcast"
 	"dummy-rom/server/message"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"math/rand/v2"
 )
 
 const BROADCAST_S_PORT = ":5000"
@@ -35,22 +34,19 @@ const (
 )
 
 type Server struct {
-	mu                sync.Mutex
-	id                string
-	ip                string
-	leaderID          string
-	broadcast         string
-	state             State
-	logger            *log.Logger
-	ru                *reliableUnicast
-	ruMsgChan         chan *UnicastMessage
-	broadConn         net.PacketConn
-	peers             map[string]string
-	discoveredPeers   map[string]bool
-	stopBroadcasting  chan struct{}
-	broadcastDoneChan chan struct{}
-	quit              chan interface{}
-	newServer         chan string
+	id              string
+	ip              string
+	leaderID        string
+	state           State
+	logger          *log.Logger
+	ru              *reliableUnicast
+	Broadcaster     *broadcast.Broadcaster
+	ruMsgChan       chan *UnicastMessage
+	peers           map[string]string
+	discoveredPeers map[string]bool
+	quit            chan interface{}
+	newServer       chan string
+	mu              sync.Mutex
 }
 
 func NewServer() (*Server, error) {
@@ -59,7 +55,7 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return &Server{}, err
 	}
-	broadcast, err := BroadcastIP(ip)
+	broadcastIp, err := BroadcastIP(ip)
 	if err != nil {
 		return &Server{}, err
 	}
@@ -74,7 +70,7 @@ func NewServer() (*Server, error) {
 	s.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%s] ", s.ip, s.id[:4]), log.Ltime)
 	s.ru = NewReliableUnicast(ruMsgChan)
 	s.ruMsgChan = ruMsgChan
-	s.broadcast = broadcast.String()
+	s.Broadcaster = broadcast.NewBroadcaster(id.String(), ip.String(), broadcastIp.String(), BROADCAST_L_PORT, BROADCAST_S_PORT, s.handleBroadcastMessage)
 	s.peers = make(map[string]string)
 	s.discoveredPeers = make(map[string]bool)
 	s.newServer = make(chan string, 5)
@@ -174,7 +170,8 @@ func (s *Server) startUnicastMessageListener() {
 				}
 
 				if id > msg.uuid || higherNodeExists {
-					s.StopBroadcasting()
+					// s.StopBroadcasting()
+					s.Broadcaster.Stop()
 					s.mu.Unlock()
 					go s.StartElection()
 					break
@@ -203,7 +200,8 @@ func (s *Server) startUnicastMessageListener() {
 					break
 				}
 				// if node is higher, then stop broadcasting
-				s.StopBroadcasting()
+				// s.StopBroadcasting()
+				s.Broadcaster.Stop()
 				s.mu.Lock()
 				s.state = ELECTION
 				s.mu.Unlock()
@@ -234,7 +232,8 @@ func (s *Server) startUnicastMessageListener() {
 				s.mu.Lock()
 				s.state = FOLLOWER
 				s.leaderID = msg.uuid
-				s.StopBroadcasting()
+				// s.StopBroadcasting()
+				s.Broadcaster.Stop()
 				s.mu.Unlock()
 				break
 			}
@@ -269,16 +268,17 @@ func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
 
 // Initlize server
 func (s *Server) StartInit() {
-	s.logger.Println("StartInit")
+	// s.logger.Println("StartInit")
 	s.mu.Lock()
-	s.StopBroadcasting()
 	s.leaderID = ""
 	s.state = INIT
 	s.mu.Unlock()
+	s.Broadcaster.Stop()
+	// s.StopBroadcasting()
 	// wait for broadcasts from other leader nodes
 	// Wait for a random time between 150ms and 300ms
-	randomDelay := time.Duration(rand.IntN(351)+50) * time.Millisecond
-	time.Sleep(randomDelay)
+	// randomDelay := time.Duration(rand.IntN(350)+10) * time.Millisecond
+	// time.Sleep(randomDelay)
 	s.mu.Lock()
 	// if the state is still on INIT, then there are no other nodes.
 	// then, start the server as a leader node
@@ -286,11 +286,12 @@ func (s *Server) StartInit() {
 		s.logger.Println("Assuming Leader")
 		s.state = LEADER
 		s.leaderID = s.id
-		go s.StartBroadcasting()
-
+		s.mu.Unlock()
+		s.Broadcaster.Start()
+		// go s.StartBroadcasting()
+		return
 	}
 	s.mu.Unlock()
-
 }
 
 func (s *Server) StartElection() {
@@ -375,7 +376,7 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 	s.leaderID = s.id
 	s.state = LEADER
 	s.logger.Println("ELECTED LEADER")
-	s.StartBroadcasting()
+	// s.StartBroadcasting()
 	// return
 	// }
 }
@@ -388,7 +389,7 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 
 func (s *Server) Shutdown() {
 	close(s.quit)
-	s.broadConn.Close()
+	s.Broadcaster.Shutdown()
 	s.ru.Shutdown()
 
 }
