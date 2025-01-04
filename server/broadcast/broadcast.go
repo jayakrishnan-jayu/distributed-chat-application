@@ -75,9 +75,7 @@ func (b *Broadcaster) StartListener() {
 		if udpAddr.IP.String() == b.ip {
 			continue
 		}
-		log.Println("sending broadcast through channel")
 		b.msgChan <- &Message{string(buf[:n]), udpAddr.IP.String()}
-		log.Println("sending broadcast through channel done")
 	}
 }
 
@@ -105,7 +103,7 @@ func (b *Broadcaster) Start() {
 				return
 			default:
 				SendUDP(b.broadcastIP, BROADCAST_S_PORT, BROADCAST_L_PORT, []byte(b.id))
-				time.Sleep(300 * time.Millisecond)
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}()

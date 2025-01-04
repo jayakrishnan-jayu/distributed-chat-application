@@ -12,6 +12,12 @@ func (s *Server) StartBroadcastListener() {
 
 // Broadcast is  used for leader discovery
 func (s *Server) startBroadcastMessageListener() {
+	prevLeaderID := ""
+	prevLeaderBroadcastCount := 0
+	s.mu.Lock()
+	id := s.id
+	s.mu.Unlock()
+
 	for {
 		select {
 		case <-s.quit:
@@ -19,33 +25,49 @@ func (s *Server) startBroadcastMessageListener() {
 			return
 		case msg := <-s.bMsgChan:
 			s.logger.Println("broadcast from", msg.IP)
+
 			clientUUIDStr := msg.UUID
 			ip := msg.IP
 
 			clientUUID, err := uuid.Parse(clientUUIDStr)
 			if err != nil {
 				s.logger.Printf("Invalid UUID received from %s: %v\n", ip, err)
-				return
+				break
 			}
 			clientUUIDStr = clientUUID.String()
 
+			// if broadcast from self, skio
+			if clientUUIDStr == id {
+				break
+			}
+
 			s.mu.Lock()
-			id := s.id
 			_, ok := s.peers[clientUUIDStr]
 			if !ok {
 				s.peers[clientUUIDStr] = ip
 			}
 			state := s.state
-			// leaderID := s.leaderID
+			if state == LEADER && clientUUIDStr > id {
+				s.state = INIT
+				s.leaderID = ""
+				s.broadcaster.Stop()
+			}
 			s.mu.Unlock()
+
+			if prevLeaderID != clientUUIDStr {
+				prevLeaderID = clientUUIDStr
+				prevLeaderBroadcastCount = 1
+				break
+			}
+			if prevLeaderBroadcastCount < 10 {
+				prevLeaderBroadcastCount += 1
+				break
+			}
 
 			// if clientUUIDStr > id && leaderID != clientUUIDStr {
 			// 	s.logger.Println("broadcast", state, clientUUIDStr, id, clientUUIDStr > id)
 			// }
 			// if broadcast is from the same node, skip
-			if clientUUIDStr == id {
-				return
-			}
 			s.logger.Println("got broadcast from", ip)
 
 			switch state {
@@ -94,14 +116,6 @@ func (s *Server) startBroadcastMessageListener() {
 				break
 			case LEADER:
 				s.logger.Println(clientUUIDStr > id, clientUUIDStr)
-				if clientUUIDStr > id {
-					s.mu.Lock()
-					s.state = INIT
-					s.leaderID = ""
-					s.broadcaster.Stop()
-					// s.StopBroadcasting()
-					s.mu.Unlock()
-				}
 
 				break
 
