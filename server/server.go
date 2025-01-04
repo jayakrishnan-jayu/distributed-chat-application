@@ -112,10 +112,6 @@ func (s *Server) StartUniCastSender() {
 	}
 }
 
-func (s *Server) StartMulticastListener() {
-	go s.rm.StartListener()
-}
-
 func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
 	data := message.NewConnectToLeaderMessage()
 	send := s.ru.SendMessage(leaderIP, id, data)
@@ -135,7 +131,7 @@ func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
 		return
 	}
 	s.mu.Lock()
-	s.discoveredPeers[leaderIP] = true
+	s.discoveredPeers[leaderID] = true
 	s.mu.Unlock()
 	s.logger.Println("connect message send", leaderIP)
 }
@@ -258,6 +254,7 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 func (s *Server) handleDeadServer(uuid string, ip string) {
 	s.mu.Lock()
 	delete(s.peers, uuid)
+	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
 }
 

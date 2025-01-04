@@ -24,7 +24,6 @@ func (s *Server) startBroadcastMessageListener() {
 			s.logger.Println("Quitting Broadcast message listner")
 			return
 		case msg := <-s.bMsgChan:
-			s.logger.Println("broadcast from", msg.IP)
 
 			clientUUIDStr := msg.UUID
 			ip := msg.IP
@@ -59,27 +58,22 @@ func (s *Server) startBroadcastMessageListener() {
 				prevLeaderBroadcastCount = 1
 				break
 			}
-			if prevLeaderBroadcastCount < 10 {
+			if prevLeaderBroadcastCount < 5 {
 				prevLeaderBroadcastCount += 1
 				break
 			}
-
-			// if clientUUIDStr > id && leaderID != clientUUIDStr {
-			// 	s.logger.Println("broadcast", state, clientUUIDStr, id, clientUUIDStr > id)
-			// }
-			// if broadcast is from the same node, skip
-			s.logger.Println("got broadcast from", ip)
 
 			switch state {
 			case INIT:
 				s.mu.Lock()
 				discovered, ok := s.discoveredPeers[clientUUIDStr]
 				s.mu.Unlock()
+
 				if ok && discovered {
 					break
 				}
-				s.logger.Println("connecting to broadcaster", ip)
-				s.connectToLeader(ip, clientUUIDStr, id)
+				s.logger.Println("connecting to broadcaster", ip, ok, discovered)
+				go s.connectToLeader(ip, clientUUIDStr, id)
 				break
 			// case FOLLOWER:
 			// 	if leaderID == "" {
@@ -112,7 +106,7 @@ func (s *Server) startBroadcastMessageListener() {
 				s.logger.Println("broadcast in ", state)
 				break
 			case FOLLOWER:
-				s.logger.Println("broadcast in ", state)
+				s.logger.Println("broadcast while follower")
 				break
 			case LEADER:
 				s.logger.Println(clientUUIDStr > id, clientUUIDStr)

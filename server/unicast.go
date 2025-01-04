@@ -40,10 +40,24 @@ func (s *Server) startUnicastMessageListener() {
 				}
 				s.mu.Unlock()
 
-				// encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
+				encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
 				// send active peers
-				s.logger.Println("Sending active peers")
-				s.rm.SendMessage(id, []byte("from leader sending active peers"))
+				go func() {
+					// send active members to new node so that new node becomes a follower,
+					// or starts an election
+					send := s.ru.SendMessage(msg.IP, id, encodedMessage)
+					if !send {
+						s.logger.Println("failed to send peer info to", msg.IP)
+						s.handleDeadServer(msg.UUID, msg.IP)
+						return
+					}
+					// send existing nodes, the new node list
+					send = s.rm.SendMessage(id, encodedMessage)
+					if !send {
+						s.logger.Fatal("Failed to send multicast")
+					}
+
+				}()
 				break
 				// for _, peerIp := range peerIps {
 				// 	if peerIp == ownIP {
@@ -61,6 +75,7 @@ func (s *Server) startUnicastMessageListener() {
 				// }
 
 			case message.PeerInfo:
+				// message from leader
 				s.logger.Println("got peer info from", msg.IP)
 				if len(unicastMessage.PeerIds) != len(unicastMessage.PeerIps) {
 					s.logger.Fatal("message.peerinfo message invalid length")

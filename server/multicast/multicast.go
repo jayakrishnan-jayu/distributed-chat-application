@@ -20,8 +20,8 @@ type ReliableMulticast struct {
 }
 
 type Message struct {
-	ip      string
-	uuid    string
+	IP      string
+	UUID    string
 	Message []byte
 }
 
@@ -77,7 +77,7 @@ func (m *ReliableMulticast) SendMessage(uuid string, data []byte) bool {
 }
 
 func (b *reliableSender) send(uuid string, data []byte) bool {
-	encodedData, err := encodeMulticastMessage(Message{uuid: uuid, Message: data})
+	encodedData, err := encodeMulticastMessage(Message{UUID: uuid, Message: data})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -113,14 +113,16 @@ func (s *reliableListener) start() {
 		if err != nil {
 			log.Printf("Error decoding data %v", err)
 		}
+		log.Println("multicast message")
 		s.msgChan <- msg
+		log.Println("done")
 	}
 }
 
 func encodeMulticastMessage(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
-	uuidBytes := []byte(msg.uuid)
+	uuidBytes := []byte(msg.UUID)
 	if len(uuidBytes) > 36 {
 		uuidBytes = uuidBytes[:36]
 	}
@@ -158,8 +160,8 @@ func decodeMulticastMessage(data []byte, ip string) (*Message, error) {
 		return msg, err
 	}
 
-	msg.ip = ip
-	msg.uuid = uuidStr
+	msg.IP = ip
+	msg.UUID = uuidStr
 	msg.Message = strBytes
 	return msg, nil
 
