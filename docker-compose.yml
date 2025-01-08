@@ -5,13 +5,13 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    ports:
-      - "8081:8080"
-    command: ["go", "run", "main.go"]
+    command: ["sh", "run.sh"]
     environment:
       - SERVER_NAME=server1
     networks:
       - go_network
+    ports:
+      - "6061:6060" # Map host port 6061 to container port 6060 for pprof
 
   server2:
     image: golang
@@ -19,13 +19,13 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    ports:
-      - "8082:8080"
-    command: ["go", "run", "main.go"]
+    command: ["sh", "run.sh"]
     environment:
       - SERVER_NAME=server2
     networks:
       - go_network
+    ports:
+      - "6062:6060" # Map host port 6062 to container port 6060 for pprof
 
   server3:
     image: golang
@@ -33,13 +33,27 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    ports:
-      - "8083:8080"
-    command: ["go", "run", "main.go"]
+    command: ["sh", "run.sh"]
     environment:
       - SERVER_NAME=server3
     networks:
       - go_network
+    ports:
+      - "6063:6060" # Map host port 6063 to container port 6060 for pprof
+
+  server4:
+    image: golang
+    container_name: server4
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: ["sh", "run.sh"]
+    environment:
+      - SERVER_NAME=server4
+    networks:
+      - go_network
+    ports:
+      - "6064:6060" # Map host port 6064 to container port 6060 for pprof
 
 networks:
   go_network:

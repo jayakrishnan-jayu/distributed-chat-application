@@ -183,7 +183,7 @@ func (s *reliableListener) start() {
 			s.mu.Unlock()
 			continue
 		}
-		log.Println(msg.Frame, lastAckFrame)
+		// log.Println(msg.Frame, lastAckFrame)
 		if msg.Frame < lastAckFrame+1 {
 			log.Printf("discarding duplicate message %s, ip: %s, tries: %d, frame: %d", string(msg.Message), msgIp, msg.Tries, msg.Frame)
 			s.mu.Unlock()

@@ -93,7 +93,7 @@ func NewServer() (*Server, error) {
 }
 
 func (s *Server) Debug() {
-	s.logger.Printf("\nUUID: %s\nIP: %s\nPeers: %v\nState: %v\nDisovered: %v", s.id, s.ip, s.peers, s.state, s.discoveredPeers)
+	s.logger.Printf("\nUUID: %s\nIP: %s\nPeers: %v\nState: %v\nLeaderID: %s\n", s.id, s.ip, s.peers, s.state, s.leaderID)
 }
 
 func (s *Server) StartUniCastSender() {
@@ -269,31 +269,35 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 }
 
 func (s *Server) becomeLeader() {
+	go s.broadcaster.Start()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.logger.Println("LEADER")
 	s.state = LEADER
 	s.leaderID = s.id
-	go s.broadcaster.Start()
+	s.mu.Unlock()
 	// start heartbeating
-	go func(interval time.Duration) {
+	go func(interval time.Duration, quit chan interface{}) {
 		t := time.NewTimer(interval)
 		defer t.Stop()
 
 		for {
-			s.mu.Lock()
-			if s.state != LEADER {
-				s.mu.Unlock()
-				s.logger.Println("stopping heartbeat")
+			select {
+			case <-quit:
+				s.logger.Println("stopping heartbeat via quit channel")
 				return
+			case <-t.C:
+				s.mu.Lock()
+				if s.state != LEADER {
+					s.mu.Unlock()
+					s.logger.Println("stopping heartbeat as state is not LEADER")
+					return
+				}
+				s.mu.Unlock()
+				s.sendHearbeat()
+				t.Reset(interval)
 			}
-			s.mu.Unlock()
-			<-t.C
-			s.sendHearbeat()
-			t.Reset(interval)
 		}
-
-	}(100 * time.Millisecond)
+	}(100*time.Millisecond, s.quit)
 }
 
 func (s *Server) sendHearbeat() {
@@ -310,6 +314,7 @@ func (s *Server) sendHearbeat() {
 }
 
 func (s *Server) becomeFollower(leaderID string) {
+	s.logger.Println("become follower to", leaderID)
 	s.mu.Lock()
 	s.state = FOLLOWER
 	s.leaderID = leaderID
@@ -353,23 +358,49 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 }
 
 func (s *Server) KillLeaderAfter(duration time.Duration) {
+	s.logger.Println("leader will be killed")
 	go func() {
 		time.Sleep(duration)
 		s.mu.Lock()
 		if s.state == LEADER {
 			s.mu.Unlock()
 			s.logger.Fatal("Leader killed")
+			// s.logger.Printf("Leader killed")
+			// os.Exit(0)
 		}
 		s.mu.Unlock()
 	}()
 }
 
+func (s *Server) KillFollowerAfter(duration time.Duration) {
+	if rand.IntN(10) < 6 {
+		s.logger.Println("Follower will not be killed")
+		return
+	}
+	s.logger.Println("Follower will be killed")
+	go func() {
+		time.Sleep(duration)
+		s.mu.Lock()
+		if s.state == FOLLOWER {
+			s.mu.Unlock()
+			s.logger.Fatal("Follower killed")
+			// s.logger.Printf("Follower killed")
+			// os.Exit(0)
+		}
+		s.mu.Unlock()
+	}()
+}
 func (s *Server) Shutdown() {
+	s.logger.Println("shutting down before lock")
+	s.mu.Lock()
+	s.logger.Println("shutting down inside lock")
 	close(s.quit)
 	s.broadcaster.Shutdown()
 	s.rm.Shutdown()
 	s.ru.Shutdown()
+	s.mu.Unlock()
 
+	s.logger.Println("shutting down done")
 }
 
 // func (*Server) getRandomUDPPort() (*net.PacketConn, int, error) {

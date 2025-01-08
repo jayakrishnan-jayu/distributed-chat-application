@@ -21,9 +21,10 @@ func main() {
 
 	go s.StartInit()
 
-	s.KillLeaderAfter(2 * time.Second)
+	s.KillLeaderAfter(3 * time.Second)
+	s.KillFollowerAfter(4 * time.Second)
 
-	time.Sleep(4 * time.Second)
+	time.Sleep(10 * time.Second)
 	s.Shutdown()
 	s.Debug()
 }

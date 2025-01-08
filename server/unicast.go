@@ -136,6 +136,7 @@ func (s *Server) startUnicastMessageListener() {
 						s.logger.Println("election 1")
 						go s.StartElection()
 					}
+					s.mu.Unlock()
 				}()
 				break
 			case message.ElectionAlive:
@@ -163,7 +164,6 @@ func (s *Server) startUnicastMessageListener() {
 				s.mu.Unlock()
 				break
 			}
-			s.logger.Println(unicastMessage.Type)
 		}
 	}
 }

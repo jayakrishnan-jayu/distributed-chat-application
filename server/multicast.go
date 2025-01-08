@@ -21,7 +21,7 @@ func (s *Server) StartMulticastMessageListener() {
 			}
 			state := s.state
 			s.mu.Unlock()
-			if state == INIT {
+			if state != FOLLOWER {
 				break
 			}
 			decodedMsg, err := message.Decode(msg.Message)
@@ -36,10 +36,22 @@ func (s *Server) StartMulticastMessageListener() {
 					s.logger.Fatal("message.peerinfo message invalid length")
 				}
 				s.mu.Lock()
+				newPeers := make(map[string]string)
 				for index, uuid := range decodedMsg.PeerIds {
-					s.peers[uuid] = decodedMsg.PeerIps[index]
+					newPeers[uuid] = decodedMsg.PeerIps[index]
 				}
+
+				for uuid, ip := range s.peers {
+					if _, ok := newPeers[uuid]; !ok {
+						if uuid == s.id {
+							s.logger.Println("\t\t own id not found", state)
+						}
+						s.logger.Println("removing node", ip, uuid)
+					}
+				}
+				s.peers = newPeers
 				s.mu.Unlock()
+
 			}
 
 			break

@@ -89,7 +89,7 @@ func (s *Server) startBroadcastMessageListener() {
 					s.logger.Println("leader id ", leaderID)
 				}
 				if clientUUIDStr == leaderID {
-					s.logger.Println("broadcast from leader")
+					s.logger.Println("broadcast from leader", leaderID)
 					break
 				}
 				break
@@ -102,57 +102,6 @@ func (s *Server) startBroadcastMessageListener() {
 				break
 
 			}
-
-			// if state == FOLLOWER {
-			// 	if clientUUIDStr != leaderID {
-			// 		s.logger.Println("broadcast rcvd from non leader")
-			// 		return
-			// 	}
-			// 	s.logger.Println("broadcast from leader")
-			// 	return
-			// }
-			//
-			// if state == ELECTION {
-			// 	s.logger.Println("In election mode, skipping broadcast")
-			// 	return
-			// }
-			//
-			// if state == INIT {
-			// 	s.mu.Lock()
-			// 	_, ok := s.peers[clientUUIDStr]
-			// 	if !ok {
-			// 		s.peers[clientUUIDStr] = ip
-			// 	}
-			// 	s.mu.Unlock()
-			// 	// if the client was already connected, and waiting for response, then skip
-			// 	if ok {
-			// 		return
-			// 	}
-			// 	s.logger.Println("Broadcast rcvd from existing server, connecting to", leaderID, ip)
-			// 	s.connectToLeader(ip, clientUUIDStr, id)
-			// 	return
-			// }
-			//
-			// if state == LEADER {
-			// 	if clientUUIDStr > id {
-			// 		s.mu.Lock()
-			// 		s.state = INIT
-			// 		s.leaderID = ""
-			// 		s.StopBroadcasting()
-			// 		s.mu.Unlock()
-			// 		s.connectToLeader(ip, clientUUIDStr, id)
-			// 	}
-			// 	return
-			// }
-
-			// if !ok {
-			// 	s.logger.Println("adding new server", ip)
-			// 	s.mu.Lock()
-			// 	s.peers[clientUUIDStr] = ip
-			// 	s.discoveredPeers[clientUUIDStr] = false
-			// 	s.mu.Unlock()
-			// 	s.newServer <- clientUUIDStr
-			// }
 
 		}
 	}
