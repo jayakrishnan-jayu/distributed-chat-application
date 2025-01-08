@@ -13,6 +13,7 @@ const (
 	Election
 	ElectionAlive
 	ElectionVictory
+	Heartbeat
 	PeerInfo
 )
 
@@ -54,6 +55,14 @@ func NewElectionAliveMessage() []byte {
 	return em
 }
 
+func NewHeartbeatMessage() []byte {
+	em, err := Encode(Message{Type: Heartbeat})
+	if err != nil {
+		log.Panic(err)
+	}
+	return em
+}
+
 func NewPeerInfoMessage(PeerIds []string, PeerIps []string) []byte {
 	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps})
 	if err != nil {
@@ -73,6 +82,7 @@ func Encode(msg Message) ([]byte, error) {
 	case Election:
 	case ElectionVictory:
 	case ElectionAlive:
+	case Heartbeat:
 		return buf.Bytes(), nil
 	case PeerInfo:
 		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.PeerIds))); err != nil {
@@ -117,6 +127,7 @@ func Decode(data []byte) (*Message, error) {
 	case Election:
 	case ElectionAlive:
 	case ElectionVictory:
+	case Heartbeat:
 		// No additional data for ConnectToLeader
 		return msg, nil
 	case PeerInfo:

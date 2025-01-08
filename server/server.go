@@ -7,17 +7,14 @@ import (
 	"dummy-rom/server/unicast"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
-
-const ROM_S_PORT = ":5004"
-const ROM_L_PORT = ":5005"
-
-const MIN_SERVERS = 3
 
 type State int
 
@@ -29,11 +26,12 @@ const (
 )
 
 type Server struct {
-	id       string
-	ip       string
-	leaderID string
-	state    State
-	logger   *log.Logger
+	id                       string
+	ip                       string
+	leaderID                 string
+	leaderHeartbeatTimestamp time.Time
+	state                    State
+	logger                   *log.Logger
 
 	ru        *unicast.ReliableUnicast
 	ruMsgChan chan *unicast.Message
@@ -77,7 +75,7 @@ func NewServer() (*Server, error) {
 	s.ru = unicast.NewReliableUnicast(ruMsgChan)
 
 	s.rmMsgChan = rmMsgChan
-	s.rm = multicast.NewReliableMulticast(rmMsgChan, "239.0.0.0", "9999")
+	s.rm = multicast.NewReliableMulticast(rmMsgChan)
 
 	s.bMsgChan = bMsgChan
 	s.broadcaster = broadcast.NewBroadcaster(s.id, s.ip, broadcastIp.String(), bMsgChan)
@@ -150,61 +148,88 @@ func (s *Server) StartInit() {
 	// randomDelay := time.Duration(rand.IntN(350)+10) * time.Millisecond
 	// time.Sleep(randomDelay)
 	s.mu.Lock()
+	state := s.state
+	s.mu.Unlock()
 	// if the state is still on INIT, then there are no other nodes.
 	// then, start the server as a leader node
-	if s.state == INIT {
+	if state == INIT {
 		s.logger.Println("Assuming Leader")
-		s.state = LEADER
-		s.leaderID = s.id
-		s.mu.Unlock()
-		s.broadcaster.Start()
-		// go s.StartBroadcasting()
+		s.becomeLeader()
 		return
 	}
-	s.mu.Unlock()
 }
 
 func (s *Server) StartElection() {
 	// TODO
 	// bully algorithm
-	s.logger.Println("Starting election")
-	s.mu.Lock()
-	s.state = ELECTION
-	peers := make(map[string]string, len(s.peers))
-	for uuid, ip := range s.peers {
-		peers[uuid] = ip
-	}
-	id := s.id
-	s.discoveredPeers = make(map[string]bool)
-	s.mu.Unlock()
-	highestID := true
+	for {
 
-	for uuid, ip := range peers {
-		if uuid > id || uuid == id {
-			continue
+		s.logger.Println("Starting election")
+		s.mu.Lock()
+		s.state = ELECTION
+		peers := make(map[string]string, len(s.peers))
+		for uuid, ip := range s.peers {
+			peers[uuid] = ip
 		}
-		highestID = false
-		s.logger.Println(ip)
-		// send election message
-		// wait unitl a specified time for
-		go func(uuid string, ip string) {
-			s.logger.Println("sending election message to", ip)
-			encodedData := message.NewElectionMessage()
-			send := s.ru.SendMessage(ip, uuid, encodedData)
-			if !send {
-				s.logger.Println("failed to send election message to", ip)
-				s.handleDeadServer(uuid, ip)
-			}
-		}(uuid, ip)
+		id := s.id
+		s.discoveredPeers = make(map[string]bool)
+		s.mu.Unlock()
+		highestID := true
 
-	}
-	if highestID {
-		// send out victory message
-		s.logger.Println("sending victory messages")
+		potentialAliveLeader := false
+		var mutex sync.Mutex
+
+		for uuid, ip := range peers {
+			if uuid > id || uuid == id {
+				continue
+			}
+			highestID = false
+			// send election message
+			// wait unitl a specified time for
+			go func(uuid string, ip string) {
+				s.logger.Println("sending election message to", ip)
+				encodedData := message.NewElectionMessage()
+				send := s.ru.SendMessage(ip, id, encodedData)
+				if !send {
+					s.logger.Println("failed to send election message to", ip)
+					s.handleDeadServer(uuid, ip)
+				} else {
+					mutex.Lock()
+					potentialAliveLeader = true
+					mutex.Unlock()
+				}
+
+			}(uuid, ip)
+
+		}
+
+		if highestID {
+			// send out victory message
+			s.logger.Println("sending victory messages")
+			go s.SendElectionVictoryAndBecomeLeader()
+			return
+		}
+
+		if potentialAliveLeader {
+			// when election message was send to higher node, and a
+			// higer node responds back, wait for 1 second for ElectionVictory
+			// otherwise start the election again
+			time.Sleep(1)
+			s.mu.Lock()
+			if s.state != FOLLOWER {
+				s.mu.Unlock()
+				// restart the election
+				s.logger.Println("restarting election")
+				continue
+			}
+			s.mu.Unlock()
+			return
+		}
+
+		s.logger.Println("no potential leader, sending victory messages")
 		go s.SendElectionVictoryAndBecomeLeader()
 		return
 	}
-
 	// check if we got response from
 }
 
@@ -227,7 +252,7 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 		go func(uuid string, ip string) {
 			defer wg.Done()
 			victoryMessage := message.NewElectionVictoryMessage()
-			send := s.ru.SendMessage(ip, uuid, victoryMessage)
+			send := s.ru.SendMessage(ip, ownID, victoryMessage)
 			if !send {
 				// TODO: handle node failure
 				s.handleDeadServer(uuid, ip)
@@ -237,18 +262,87 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 		}(uuid, ip)
 	}
 	// wait until all vicotry messages are send and ack is received
+	s.becomeLeader()
 	wg.Wait()
 	s.logger.Println("Victory messages sent")
+
+}
+
+func (s *Server) becomeLeader() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// if s.state == ELECTION {
-	s.leaderID = s.id
+	s.logger.Println("LEADER")
 	s.state = LEADER
-	s.logger.Println("ELECTED LEADER")
-	// s.StartBroadcasting()
-	// return
-	// }
+	s.leaderID = s.id
+	go s.broadcaster.Start()
+	// start heartbeating
+	go func(interval time.Duration) {
+		t := time.NewTimer(interval)
+		defer t.Stop()
+
+		for {
+			s.mu.Lock()
+			if s.state != LEADER {
+				s.mu.Unlock()
+				s.logger.Println("stopping heartbeat")
+				return
+			}
+			s.mu.Unlock()
+			<-t.C
+			s.sendHearbeat()
+			t.Reset(interval)
+		}
+
+	}(100 * time.Millisecond)
+}
+
+func (s *Server) sendHearbeat() {
+	hearbeat := message.NewHeartbeatMessage()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.id
+	for uuid, ip := range s.peers {
+		if id == uuid {
+			continue
+		}
+		go s.ru.SendMessage(ip, uuid, hearbeat)
+	}
+}
+
+func (s *Server) becomeFollower(leaderID string) {
+	s.mu.Lock()
+	s.state = FOLLOWER
+	s.leaderID = leaderID
+	s.mu.Unlock()
+
+	go func(interval time.Duration) {
+		t := time.NewTimer(interval)
+		defer t.Stop()
+
+		for {
+			s.mu.Lock()
+			if s.state != FOLLOWER {
+				s.mu.Unlock()
+				s.logger.Println("stopping hearbeat listener")
+				return
+			}
+			s.mu.Unlock()
+			<-t.C
+			s.mu.Lock()
+			diff := time.Now().Sub(s.leaderHeartbeatTimestamp)
+			newLeader := s.leaderID != leaderID
+			s.mu.Unlock()
+			if newLeader {
+				return
+			}
+			if diff > interval {
+				s.logger.Println("election 4")
+				go s.StartElection()
+				return
+			}
+			t.Reset(interval)
+		}
+	}(time.Duration(rand.IntN(200)+200) * time.Millisecond)
 }
 
 func (s *Server) handleDeadServer(uuid string, ip string) {
@@ -256,6 +350,18 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 	delete(s.peers, uuid)
 	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
+}
+
+func (s *Server) KillLeaderAfter(duration time.Duration) {
+	go func() {
+		time.Sleep(duration)
+		s.mu.Lock()
+		if s.state == LEADER {
+			s.mu.Unlock()
+			s.logger.Fatal("Leader killed")
+		}
+		s.mu.Unlock()
+	}()
 }
 
 func (s *Server) Shutdown() {

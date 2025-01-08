@@ -20,7 +20,10 @@ func main() {
 	go s.StartMulticastListener()
 
 	go s.StartInit()
-	time.Sleep(5 * time.Second)
+
+	s.KillLeaderAfter(2 * time.Second)
+
+	time.Sleep(4 * time.Second)
 	s.Shutdown()
 	s.Debug()
 }

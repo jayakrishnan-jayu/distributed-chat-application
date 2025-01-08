@@ -3,7 +3,6 @@ package multicast
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 const (
 	maxDatagramSize = 8192
+	ROM_ADDRESS     = "239.0.0.0:9999"
 )
 
 type ReliableMulticast struct {
@@ -38,8 +38,8 @@ type reliableListener struct {
 	quit    <-chan interface{}
 }
 
-func NewReliableMulticast(msgChan chan<- *Message, ip string, port string) *ReliableMulticast {
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%s", ip, port))
+func NewReliableMulticast(msgChan chan<- *Message) *ReliableMulticast {
+	addr, err := net.ResolveUDPAddr("udp4", ROM_ADDRESS)
 	if err != nil {
 		log.Panic(err)
 	}

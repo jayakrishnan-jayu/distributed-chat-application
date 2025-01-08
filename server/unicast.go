@@ -90,17 +90,16 @@ func (s *Server) startUnicastMessageListener() {
 						higherNodeExists = true
 					}
 				}
+				s.mu.Unlock()
 
 				if id > msg.UUID || higherNodeExists {
 					// s.StopBroadcasting()
 					s.broadcaster.Stop()
-					s.mu.Unlock()
+					s.logger.Println("election 3")
 					go s.StartElection()
 					break
 				}
-				s.state = FOLLOWER
-				s.leaderID = msg.UUID
-				s.mu.Unlock()
+				s.becomeFollower(msg.UUID)
 				break
 
 			case message.Election:
@@ -118,6 +117,7 @@ func (s *Server) startUnicastMessageListener() {
 						s.handleDeadServer(msg.UUID, msg.IP)
 						s.logger.Println("failed to send alive message to", msg.IP)
 					}
+					s.logger.Println("election 2")
 					go s.StartElection()
 					break
 				}
@@ -133,7 +133,8 @@ func (s *Server) startUnicastMessageListener() {
 					time.Sleep(2 * time.Second)
 					s.mu.Lock()
 					if s.state != FOLLOWER {
-						s.StartElection()
+						s.logger.Println("election 1")
+						go s.StartElection()
 					}
 				}()
 				break
@@ -150,12 +151,15 @@ func (s *Server) startUnicastMessageListener() {
 				break
 
 			case message.ElectionVictory:
-				s.logger.Println("got election victory from", msg.IP)
-				s.mu.Lock()
-				s.state = FOLLOWER
-				s.leaderID = msg.UUID
+				s.logger.Println("got election victory from", msg.IP, msg.UUID)
+				s.logger.Println("new leader", msg.UUID)
+				s.becomeFollower(msg.UUID)
 				// s.StopBroadcasting()
 				s.broadcaster.Stop()
+				break
+			case message.Heartbeat:
+				s.mu.Lock()
+				s.leaderHeartbeatTimestamp = time.Now()
 				s.mu.Unlock()
 				break
 			}

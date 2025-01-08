@@ -15,6 +15,10 @@ func (s *Server) StartMulticastMessageListener() {
 			return
 		case msg := <-s.rmMsgChan:
 			s.mu.Lock()
+			if msg.UUID == s.id {
+				s.mu.Unlock()
+				break
+			}
 			state := s.state
 			s.mu.Unlock()
 			if state == INIT {

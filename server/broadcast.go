@@ -46,11 +46,15 @@ func (s *Server) startBroadcastMessageListener() {
 				s.peers[clientUUIDStr] = ip
 			}
 			state := s.state
+			// if two or more nodes assume leader position and start position,
+			// and if the current node is of lower id, restart again
 			if state == LEADER && clientUUIDStr > id {
+				// TODO: call init method
 				s.state = INIT
 				s.leaderID = ""
 				s.broadcaster.Stop()
 			}
+			leaderID := s.leaderID
 			s.mu.Unlock()
 
 			if prevLeaderID != clientUUIDStr {
@@ -75,41 +79,25 @@ func (s *Server) startBroadcastMessageListener() {
 				s.logger.Println("connecting to broadcaster", ip, ok, discovered)
 				go s.connectToLeader(ip, clientUUIDStr, id)
 				break
-			// case FOLLOWER:
-			// 	if leaderID == "" {
-			// 		log.Panic("Invalid state: leaderID is empty while in FOLLOWER state")
-			// 		break
-			// 	}
-			// 	if clientUUIDStr == leaderID {
-			// 		log.Println("broadcast from leader")
-			// 		break
-			// 	}
-			// 	s.mu.Lock()
-			// 	if _, ok := s.peers[clientUUIDStr]; !ok {
-			// 		s.peers[clientUUIDStr] = ip
-			// 	}
-			// 	s.mu.Unlock()
-			// 	if clientUUIDStr > leaderID {
-			// 		log.Println("found new leader with higher id")
-			// 		s.mu.Lock()
-			// 		s.peers[clientUUIDStr] = ip
-			// 		s.mu.Unlock()
-			// 		s.connectToLeader(ip, clientUUIDStr, id)
-			// 		break
-			// 	}
-			// 	log.Println("lower id node broadcasting", ip, clientUUIDStr, leaderID)
-			// 	break
-			// case ELECTION:
-			// 	log.Println("in election, skipping broadcast")
-			// 	break
-			case ELECTION:
-				s.logger.Println("broadcast in ", state)
-				break
 			case FOLLOWER:
-				s.logger.Println("broadcast while follower")
+				if leaderID == "" {
+					s.logger.Panic("Invalid state: leaderID is empty while in FOLLOWER state")
+					break
+				}
+				if leaderID != msg.UUID {
+					s.logger.Println("recvd broadcast from non leader node", msg.UUID)
+					s.logger.Println("leader id ", leaderID)
+				}
+				if clientUUIDStr == leaderID {
+					s.logger.Println("broadcast from leader")
+					break
+				}
+				break
+			case ELECTION:
+				s.logger.Println("broadcast while in election ")
 				break
 			case LEADER:
-				s.logger.Println(clientUUIDStr > id, clientUUIDStr)
+				s.logger.Println("broadcast while being leader", clientUUIDStr > id, clientUUIDStr)
 
 				break
 
