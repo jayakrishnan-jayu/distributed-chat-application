@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-const UNI_S_PORT = ":5002"
 const UNI_L_PORT = ":5003"
 
 type ReliableUnicast struct {
@@ -79,19 +78,15 @@ type Message struct {
 	Message  []byte
 }
 
-func NewReliableUnicast(msgChan chan<- *Message) *ReliableUnicast {
+func NewReliableUnicast(msgChan chan<- *Message, senderConn, listenerConn net.PacketConn) *ReliableUnicast {
 	s := new(ReliableUnicast)
-	pc, err := net.ListenPacket("udp4", UNI_S_PORT)
-	if err != nil {
-		log.Panic(err)
-	}
 
 	s.sAckChan = make(chan string, 5)
 	s.lAckChan = make(chan *Message, 5)
 	s.msgChan = msgChan
 	s.quit = make(chan interface{})
 
-	s.sender.conn = pc
+	s.sender.conn = senderConn
 	s.sender.msgBuf = make(map[string]*Message)
 	s.sender.peerFrame = make(map[string]uint64)
 	s.sender.ackFrame = make(map[string]bool)
@@ -99,6 +94,7 @@ func NewReliableUnicast(msgChan chan<- *Message) *ReliableUnicast {
 	s.sender.lAckChan = s.lAckChan
 	s.sender.quit = s.quit
 
+	s.listener.conn = listenerConn
 	s.listener.msgBuf = make(map[string]*Message)
 	s.listener.peerFrame = make(map[string]uint64)
 	s.listener.msgChan = s.msgChan
@@ -119,17 +115,9 @@ func (s *ReliableUnicast) SendMessage(ip string, uuid string, data []byte) bool 
 
 func (s *ReliableUnicast) Shutdown() {
 	close(s.quit)
-	s.listener.Shutdown()
-	s.sender.Shutdown()
 }
 
 func (s *reliableListener) start() {
-	var err error
-
-	s.conn, err = net.ListenPacket("udp4", UNI_L_PORT)
-	if err != nil {
-		log.Panic(err)
-	}
 	defer s.conn.Close()
 
 	buf := make([]byte, 1024)
@@ -232,9 +220,7 @@ func (s *reliableSender) send(ip string, uuid string, data []byte) bool {
 	}
 	s.ackFrame[msgIndex] = false
 	s.mu.Unlock()
-
 	s.sendUDP(ip, encodedData)
-
 	for {
 		time.Sleep(10 * time.Millisecond)
 		s.mu.Lock()
@@ -399,13 +385,4 @@ func generateAck(ip string, frame uint64, tries uint8) []byte {
 		log.Panic(err)
 	}
 	return d
-}
-
-func (s *reliableListener) Shutdown() {
-	//race condition
-	s.conn.Close()
-}
-
-func (s *reliableSender) Shutdown() {
-	s.conn.Close()
 }

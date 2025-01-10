@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -24,6 +25,9 @@ const (
 	FOLLOWER
 	ELECTION
 )
+
+const UNI_S_PORT = ":5002"
+const UNI_L_PORT = ":5003"
 
 type Server struct {
 	id                       string
@@ -64,6 +68,16 @@ func NewServer() (*Server, error) {
 	rmMsgChan := make(chan *multicast.Message, 5)
 	bMsgChan := make(chan *broadcast.Message, 5)
 
+	uniSenderConn, err := net.ListenPacket("udp4", UNI_S_PORT)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	uniListnerConn, err := net.ListenPacket("udp4", UNI_L_PORT)
+	if err != nil {
+		log.Panic(err)
+	}
+
 	s := new(Server)
 	s.state = INIT
 	s.id = id.String()
@@ -72,7 +86,7 @@ func NewServer() (*Server, error) {
 	s.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%s] ", s.ip, s.id[:4]), log.Ltime)
 
 	s.ruMsgChan = ruMsgChan
-	s.ru = unicast.NewReliableUnicast(ruMsgChan)
+	s.ru = unicast.NewReliableUnicast(ruMsgChan, uniSenderConn, uniListnerConn)
 
 	s.rmMsgChan = rmMsgChan
 	s.rm = multicast.NewReliableMulticast(rmMsgChan)
