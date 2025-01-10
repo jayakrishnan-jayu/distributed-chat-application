@@ -24,7 +24,7 @@ func main() {
 	s.KillLeaderAfter(3 * time.Second)
 	s.KillFollowerAfter(4 * time.Second)
 
-	time.Sleep(10 * time.Second)
+	time.Sleep(15 * time.Second)
 	s.Shutdown()
 	s.Debug()
 }

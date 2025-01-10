@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,9 @@ type reliableSender struct {
 	mu sync.Mutex
 
 	conn net.PacketConn
+
+	uuid string
+
 	// message buffer for retransmission in case of transmission loss
 	// map[ip_string+fram]Message
 	msgBuf map[string]*Message
@@ -49,6 +53,8 @@ type reliableListener struct {
 
 	//listener connection
 	conn net.PacketConn
+
+	uuid string
 
 	// buffer to hold messages that are head of frame count in application layer
 	// map[ip_string+fram]Message
@@ -73,12 +79,13 @@ type Message struct {
 	Response byte
 	Frame    uint64
 	Tries    uint8
-	UUID     string
+	FromUUID string
+	ToUUID   string
 	IP       string
 	Message  []byte
 }
 
-func NewReliableUnicast(msgChan chan<- *Message, senderConn, listenerConn net.PacketConn) *ReliableUnicast {
+func NewReliableUnicast(msgChan chan<- *Message, serverUUID string, senderConn, listenerConn net.PacketConn) *ReliableUnicast {
 	s := new(ReliableUnicast)
 
 	s.sAckChan = make(chan string, 5)
@@ -87,6 +94,7 @@ func NewReliableUnicast(msgChan chan<- *Message, senderConn, listenerConn net.Pa
 	s.quit = make(chan interface{})
 
 	s.sender.conn = senderConn
+	s.sender.uuid = serverUUID
 	s.sender.msgBuf = make(map[string]*Message)
 	s.sender.peerFrame = make(map[string]uint64)
 	s.sender.ackFrame = make(map[string]bool)
@@ -95,6 +103,7 @@ func NewReliableUnicast(msgChan chan<- *Message, senderConn, listenerConn net.Pa
 	s.sender.quit = s.quit
 
 	s.listener.conn = listenerConn
+	s.listener.uuid = serverUUID
 	s.listener.msgBuf = make(map[string]*Message)
 	s.listener.peerFrame = make(map[string]uint64)
 	s.listener.msgChan = s.msgChan
@@ -115,10 +124,11 @@ func (s *ReliableUnicast) SendMessage(ip string, uuid string, data []byte) bool 
 
 func (s *ReliableUnicast) Shutdown() {
 	close(s.quit)
+	s.sender.conn.Close()
+	s.listener.conn.Close()
 }
 
 func (s *reliableListener) start() {
-	defer s.conn.Close()
 
 	buf := make([]byte, 1024)
 
@@ -142,8 +152,14 @@ func (s *reliableListener) start() {
 		if err != nil {
 			log.Printf("Error decoding data %v", err)
 		}
+
+		if msg.ToUUID != s.uuid {
+			log.Println("unicast message: uuid does not match current uuid", msg.ToUUID, s.uuid)
+			continue
+		}
+
 		msgIp := msg.IP
-		msgIndex := fmt.Sprintf("%s%d", msgIp, msg.Frame)
+		msgIndex := fmt.Sprintf("%s%d", msg.FromUUID, msg.Frame)
 
 		// if the message is an ack for a frame
 		if msg.Response == 1 {
@@ -151,37 +167,40 @@ func (s *reliableListener) start() {
 			continue
 		}
 
+		// send ack for recvd message
 		s.lAckChan <- &Message{
 			IP:       msgIp,
 			Frame:    msg.Frame,
 			Tries:    msg.Tries,
+			FromUUID: s.uuid,
+			ToUUID:   msg.FromUUID,
 			Response: 1,
 		}
-
 		// message from a peer
 		s.mu.Lock()
-		lastAckFrame, ok := s.peerFrame[msg.IP]
+		lastAckFrame, ok := s.peerFrame[msg.FromUUID]
 		if !ok {
 			// first message from a new peer
-			s.peerFrame[msgIp] = 0
+			s.peerFrame[msg.FromUUID] = 0
 		}
 		if msg.Frame > lastAckFrame+1 {
 			// previous frame/frames missing
+			fmt.Println("prev frames missing")
 			s.msgBuf[msgIndex] = msg
 			s.mu.Unlock()
 			continue
 		}
-		// log.Println(msg.Frame, lastAckFrame)
+		// fmt.Println(msg.Frame, lastAckFrame)
 		if msg.Frame < lastAckFrame+1 {
-			log.Printf("discarding duplicate message %s, ip: %s, tries: %d, frame: %d", string(msg.Message), msgIp, msg.Tries, msg.Frame)
+			fmt.Printf("discarding duplicate message %s, ip: %s, tries: %d, frame: %d, lastAckFrame: %d\n", string(msg.Message), msgIp, msg.Tries, msg.Frame, lastAckFrame)
 			s.mu.Unlock()
 			continue
 		}
-		s.peerFrame[msgIp] += 1
+		s.peerFrame[msg.FromUUID] += 1
 		s.msgChan <- msg
 		if len(s.msgBuf) > 0 {
 			for {
-				msgIndex = fmt.Sprintf("%s%d", msgIp, s.peerFrame[msgIp])
+				msgIndex = fmt.Sprintf("%s%d", msg.FromUUID, s.peerFrame[msg.FromUUID])
 				m, ok := s.msgBuf[msgIndex]
 				if !ok {
 					break
@@ -195,22 +214,26 @@ func (s *reliableListener) start() {
 	}
 }
 
+// ip: ip address of the node to send to.
+// uuid: uuid address of the node to send to.
+// data: byte[] of data to send to.
 func (s *reliableSender) send(ip string, uuid string, data []byte) bool {
 	s.mu.Lock()
-	currFrame, ok := s.peerFrame[ip]
+	currFrame, ok := s.peerFrame[uuid]
 	if !ok {
-		s.peerFrame[ip] = 0
+		s.peerFrame[uuid] = 0
 	}
-	s.peerFrame[ip] += 1
-	currFrame = s.peerFrame[ip]
+	s.peerFrame[uuid] += 1
+	currFrame = s.peerFrame[uuid]
 
-	msgIndex := fmt.Sprintf("%s%d", ip, currFrame)
+	msgIndex := fmt.Sprintf("%s%d", uuid, currFrame)
 
 	s.msgBuf[msgIndex] = &Message{
 		Response: 0,
 		Frame:    currFrame,
 		Tries:    0,
-		UUID:     uuid,
+		FromUUID: s.uuid,
+		ToUUID:   uuid,
 		IP:       ip,
 		Message:  data,
 	}
@@ -220,9 +243,14 @@ func (s *reliableSender) send(ip string, uuid string, data []byte) bool {
 	}
 	s.ackFrame[msgIndex] = false
 	s.mu.Unlock()
-	s.sendUDP(ip, encodedData)
 	for {
-		time.Sleep(10 * time.Millisecond)
+		err = s.sendUDP(ip, encodedData)
+		if err != nil {
+			log.Println(err)
+			s.handleDeadNode(uuid)
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
 		s.mu.Lock()
 		_, ok := s.ackFrame[msgIndex]
 		s.mu.Unlock()
@@ -234,16 +262,19 @@ func (s *reliableSender) send(ip string, uuid string, data []byte) bool {
 			log.Panic(err)
 		}
 		if decodedData.Tries == 20 {
-			log.Println(decodedData)
+			log.Println("no acknowledgement for 20 tries assuming dead")
+			s.handleDeadNode(uuid)
 			return false
 		}
 		decodedData.Tries += 1
-		encodedData, err := encodeUnicastMessage(*decodedData)
-		s.sendUDP(ip, encodedData)
+		encodedData, err = encodeUnicastMessage(*decodedData)
+		if err != nil {
+			log.Panic(err)
+		}
 	}
 }
 
-func (s *reliableSender) sendUDP(ip string, data []byte) {
+func (s *reliableSender) sendUDP(ip string, data []byte) error {
 	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s%s", ip, UNI_L_PORT))
 	if err != nil {
 		log.Panic(err)
@@ -251,8 +282,9 @@ func (s *reliableSender) sendUDP(ip string, data []byte) {
 
 	_, err = s.conn.WriteTo(data, addr)
 	if err != nil {
-		log.Panic(err)
+		return err
 	}
+	return nil
 }
 
 func (s *reliableSender) ackListener() {
@@ -272,10 +304,27 @@ func (s *reliableSender) ackListener() {
 				log.Panic(err)
 			}
 			// log.Printf("Sending ACK to %s for frame %d", msg.Ip, msg.frame)
-			// time.Sleep(50 * time.Millisecond)
+			// time.Sleep(1000 * time.Millisecond)
 			s.sendUDP(msg.IP, d)
 		}
 	}
+}
+
+func (s *reliableSender) handleDeadNode(uuid string) {
+	s.mu.Lock()
+	delete(s.peerFrame, uuid)
+	for msgIndex := range s.ackFrame {
+		if strings.HasPrefix(msgIndex, uuid) {
+			// _, ok := s.ackFrame[msgIndex]
+			// fmt.Println("deleting ackFrame", msgIndex, ok)
+			// _, ok = s.msgBuf[msgIndex]
+			// fmt.Println("deleting msgBuf", msgIndex, ok)
+			delete(s.ackFrame, msgIndex)
+			delete(s.msgBuf, msgIndex)
+		}
+	}
+
+	s.mu.Unlock()
 }
 
 func encodeUnicastMessage(msg Message) ([]byte, error) {
@@ -288,22 +337,31 @@ func encodeUnicastMessage(msg Message) ([]byte, error) {
 		return nil, err
 	}
 
-	if msg.Response == 1 {
-		return buf.Bytes(), nil
-	}
-
 	if err := binary.Write(&buf, binary.BigEndian, msg.Tries); err != nil {
 		return nil, err
 	}
 
-	uuidBytes := []byte(msg.UUID)
-	if len(uuidBytes) > 36 {
-		uuidBytes = uuidBytes[:36]
+	fromUUIDBytes := []byte(msg.FromUUID)
+	if len(fromUUIDBytes) > 36 {
+		fromUUIDBytes = fromUUIDBytes[:36]
 	}
-	if len(uuidBytes) < 36 {
-		uuidBytes = append(uuidBytes, make([]byte, 36-len(uuidBytes))...)
+	if len(fromUUIDBytes) < 36 {
+		fromUUIDBytes = append(fromUUIDBytes, make([]byte, 36-len(fromUUIDBytes))...)
 	}
-	buf.Write(uuidBytes)
+	buf.Write(fromUUIDBytes)
+
+	toUUIDBytes := []byte(msg.ToUUID)
+	if len(toUUIDBytes) > 36 {
+		toUUIDBytes = toUUIDBytes[:36]
+	}
+	if len(toUUIDBytes) < 36 {
+		toUUIDBytes = append(toUUIDBytes, make([]byte, 36-len(toUUIDBytes))...)
+	}
+	buf.Write(toUUIDBytes)
+
+	if msg.Response == 1 {
+		return buf.Bytes(), nil
+	}
 
 	// ipBytes := []byte(msg.Ip)
 	// log.Println("Ip bytes", len(ipBytes))
@@ -337,13 +395,6 @@ func decodeUnicastMessage(data []byte, ip string) (*Message, error) {
 		return msg, err
 	}
 
-	if response == 1 {
-		msg.Response = 1
-		msg.Frame = frame
-		msg.IP = ip
-		return msg, nil
-	}
-
 	var tries uint8
 	if err := binary.Read(reader, binary.BigEndian, &tries); err != nil {
 		return msg, err
@@ -353,7 +404,23 @@ func decodeUnicastMessage(data []byte, ip string) (*Message, error) {
 	if _, err := reader.Read(uuidBytes); err != nil {
 		return msg, err
 	}
-	uuidStr := string(uuidBytes)
+	fromUUIDStr := string(uuidBytes)
+
+	if _, err := reader.Read(uuidBytes); err != nil {
+		return msg, err
+	}
+
+	toUUIDStr := string(uuidBytes)
+
+	if response == 1 {
+		msg.Response = 1
+		msg.Frame = frame
+		msg.Tries = tries
+		msg.FromUUID = fromUUIDStr
+		msg.ToUUID = toUUIDStr
+		msg.IP = ip
+		return msg, nil
+	}
 
 	// ipBytes := make([]byte, 15)
 	// if _, err := reader.Read(ipBytes); err != nil {
@@ -371,18 +438,12 @@ func decodeUnicastMessage(data []byte, ip string) (*Message, error) {
 		return msg, err
 	}
 
-	msg.UUID = uuidStr
+	msg.FromUUID = fromUUIDStr
+	msg.ToUUID = toUUIDStr
+	msg.Tries = tries
 	msg.IP = ip
 	msg.Frame = frame
 	msg.Message = strBytes
 
 	return msg, nil
-}
-
-func generateAck(ip string, frame uint64, tries uint8) []byte {
-	d, err := encodeUnicastMessage(Message{IP: ip, Frame: frame, Tries: tries, Response: 1})
-	if err != nil {
-		log.Panic(err)
-	}
-	return d
 }

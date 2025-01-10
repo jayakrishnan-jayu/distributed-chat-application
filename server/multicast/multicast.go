@@ -113,9 +113,7 @@ func (s *reliableListener) start() {
 		if err != nil {
 			log.Printf("Error decoding data %v", err)
 		}
-		log.Println("multicast message")
 		s.msgChan <- msg
-		log.Println("done")
 	}
 }
 

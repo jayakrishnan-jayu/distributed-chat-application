@@ -13,6 +13,7 @@ type MockPacketConn struct {
 	Router      *MockRouter
 	readBuffer  chan Packet
 	writeBuffer map[string]*bytes.Buffer
+	isClosed    bool
 	mu          sync.Mutex
 }
 
@@ -39,16 +40,27 @@ func (r *MockRouter) Register(conn *MockPacketConn) {
 	r.connections[conn.LocalAddr().String()] = conn
 }
 
-func (r *MockRouter) Send(toAddr string, data []byte, fromAddr net.Addr) {
+func (r *MockRouter) Send(toAddr string, data []byte, fromAddr net.Addr) (n int, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	time.Sleep(5 * time.Millisecond)
-	if conn, ok := r.connections[toAddr]; ok {
-		conn.readBuffer <- Packet{
-			Data: data,
-			Addr: fromAddr,
-		}
+
+	conn, ok := r.connections[toAddr]
+	if !ok {
+		return 0, fmt.Errorf("destination not found: %s", toAddr)
 	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.isClosed {
+		return 0, fmt.Errorf("connection to %s is closed", toAddr)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	conn.readBuffer <- Packet{
+		Data: data,
+		Addr: fromAddr,
+	}
+	return len(data), nil
 }
 
 func NewMockPacketConn(addr string, port int) *MockPacketConn {
@@ -60,6 +72,13 @@ func NewMockPacketConn(addr string, port int) *MockPacketConn {
 }
 
 func (m *MockPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	m.mu.Lock()
+	if m.isClosed {
+		m.mu.Unlock()
+		return 0, nil, net.ErrClosed
+	}
+	m.mu.Unlock()
+
 	packet, ok := <-m.readBuffer
 	if !ok {
 		return 0, nil, net.ErrClosed
@@ -70,17 +89,19 @@ func (m *MockPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 
 func (m *MockPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if m.Router != nil {
-		m.Router.Send(addr.String(), p, m.addr)
-		return len(p), nil
+		return m.Router.Send(addr.String(), p, m.addr)
 	}
-	return 0, fmt.Errorf("Router not set")
+	return 0, fmt.Errorf("router not set")
 }
-
 func (m *MockPacketConn) Close() error {
-	close(m.readBuffer)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.isClosed {
+		close(m.readBuffer)
+		m.isClosed = true
+	}
 	return nil
 }
-
 func (m *MockPacketConn) LocalAddr() net.Addr {
 	return m.addr
 }

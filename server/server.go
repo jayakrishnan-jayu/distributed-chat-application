@@ -86,7 +86,7 @@ func NewServer() (*Server, error) {
 	s.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%s] ", s.ip, s.id[:4]), log.Ltime)
 
 	s.ruMsgChan = ruMsgChan
-	s.ru = unicast.NewReliableUnicast(ruMsgChan, uniSenderConn, uniListnerConn)
+	s.ru = unicast.NewReliableUnicast(ruMsgChan, s.id, uniSenderConn, uniListnerConn)
 
 	s.rmMsgChan = rmMsgChan
 	s.rm = multicast.NewReliableMulticast(rmMsgChan)
@@ -117,8 +117,8 @@ func (s *Server) StartUniCastSender() {
 			s.mu.Lock()
 			ip := s.peers[clientUUIDStr]
 			s.logger.Printf("sending message to %s from %s", ip, s.ip)
-			s.ru.SendMessage(ip, s.id, []byte("Hello"))
 			s.mu.Unlock()
+			s.ru.SendMessage(ip, clientUUIDStr, []byte("Hello"))
 
 		}
 	}
@@ -126,7 +126,7 @@ func (s *Server) StartUniCastSender() {
 
 func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
 	data := message.NewConnectToLeaderMessage()
-	send := s.ru.SendMessage(leaderIP, id, data)
+	send := s.ru.SendMessage(leaderIP, leaderID, data)
 	if !send {
 		s.logger.Println("Failed to connect to leader")
 
@@ -203,7 +203,7 @@ func (s *Server) StartElection() {
 			go func(uuid string, ip string) {
 				s.logger.Println("sending election message to", ip)
 				encodedData := message.NewElectionMessage()
-				send := s.ru.SendMessage(ip, id, encodedData)
+				send := s.ru.SendMessage(ip, uuid, encodedData)
 				if !send {
 					s.logger.Println("failed to send election message to", ip)
 					s.handleDeadServer(uuid, ip)
@@ -266,7 +266,7 @@ func (s *Server) SendElectionVictoryAndBecomeLeader() {
 		go func(uuid string, ip string) {
 			defer wg.Done()
 			victoryMessage := message.NewElectionVictoryMessage()
-			send := s.ru.SendMessage(ip, ownID, victoryMessage)
+			send := s.ru.SendMessage(ip, uuid, victoryMessage)
 			if !send {
 				// TODO: handle node failure
 				s.handleDeadServer(uuid, ip)
@@ -311,7 +311,7 @@ func (s *Server) becomeLeader() {
 				t.Reset(interval)
 			}
 		}
-	}(100*time.Millisecond, s.quit)
+	}(250*time.Millisecond, s.quit)
 }
 
 func (s *Server) sendHearbeat() {
@@ -323,7 +323,12 @@ func (s *Server) sendHearbeat() {
 		if id == uuid {
 			continue
 		}
-		go s.ru.SendMessage(ip, uuid, hearbeat)
+		go func() {
+			send := s.ru.SendMessage(ip, uuid, hearbeat)
+			if !send {
+				s.handleDeadServer(uuid, ip)
+			}
+		}()
 	}
 }
 
@@ -361,7 +366,37 @@ func (s *Server) becomeFollower(leaderID string) {
 			}
 			t.Reset(interval)
 		}
-	}(time.Duration(rand.IntN(200)+200) * time.Millisecond)
+	}(time.Duration(rand.IntN(250)+250) * time.Millisecond)
+}
+
+func (s *Server) multicastPeerInfo() {
+	s.mu.Lock()
+	peerIds := make([]string, 0, len(s.peers))
+	peerIps := make([]string, 0, len(s.peers))
+	id := s.id
+	// ownIP := s.ip
+	for uuid, ip := range s.peers {
+		peerIds = append(peerIds, uuid)
+		peerIps = append(peerIps, ip)
+	}
+	s.mu.Unlock()
+
+	encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
+	// send active peers
+	var wg sync.WaitGroup
+	go func() {
+		// send active members to new node so that new node becomes a follower,
+		// or starts an election
+		wg.Add(1)
+		defer wg.Done()
+		// send existing nodes, the new node list
+		send := s.rm.SendMessage(id, encodedMessage)
+		if !send {
+			s.logger.Fatal("Failed to send multicast")
+		}
+
+	}()
+	wg.Wait()
 }
 
 func (s *Server) handleDeadServer(uuid string, ip string) {
@@ -369,6 +404,7 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 	delete(s.peers, uuid)
 	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
+	s.multicastPeerInfo()
 }
 
 func (s *Server) KillLeaderAfter(duration time.Duration) {
@@ -405,16 +441,12 @@ func (s *Server) KillFollowerAfter(duration time.Duration) {
 	}()
 }
 func (s *Server) Shutdown() {
-	s.logger.Println("shutting down before lock")
 	s.mu.Lock()
-	s.logger.Println("shutting down inside lock")
 	close(s.quit)
 	s.broadcaster.Shutdown()
 	s.rm.Shutdown()
 	s.ru.Shutdown()
 	s.mu.Unlock()
-
-	s.logger.Println("shutting down done")
 }
 
 // func (*Server) getRandomUDPPort() (*net.PacketConn, int, error) {

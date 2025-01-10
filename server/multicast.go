@@ -20,13 +20,14 @@ func (s *Server) StartMulticastMessageListener() {
 				break
 			}
 			state := s.state
-			s.mu.Unlock()
-			if state != FOLLOWER {
-				break
-			}
 			decodedMsg, err := message.Decode(msg.Message)
 			if err != nil {
 				s.logger.Println("error decoding multicast message")
+				break
+			}
+
+			s.mu.Unlock()
+			if state != FOLLOWER || state == INIT && decodedMsg.Type == message.PeerInfo {
 				break
 			}
 
@@ -44,7 +45,7 @@ func (s *Server) StartMulticastMessageListener() {
 				for uuid, ip := range s.peers {
 					if _, ok := newPeers[uuid]; !ok {
 						if uuid == s.id {
-							s.logger.Println("\t\t own id not found", state)
+							s.logger.Println("\t\t own id not found", state, s.leaderID, ".")
 						}
 						s.logger.Println("removing node", ip, uuid)
 					}

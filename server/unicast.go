@@ -29,48 +29,45 @@ func (s *Server) startUnicastMessageListener() {
 
 				s.mu.Lock()
 				s.logger.Println("got connectToLeader is leader: ", s.state == LEADER)
-				s.peers[msg.UUID] = msg.IP
+				if s.state != LEADER {
+					s.mu.Unlock()
+					s.logger.Println("got connect to leader while not being leader")
+					return
+				}
+				s.peers[msg.FromUUID] = msg.IP
 				peerIds := make([]string, 0, len(s.peers))
 				peerIps := make([]string, 0, len(s.peers))
-				id := s.id
-				// ownIP := s.ip
 				for uuid, ip := range s.peers {
 					peerIds = append(peerIds, uuid)
 					peerIps = append(peerIps, ip)
 				}
+				// ownIP := s.ip
 				s.mu.Unlock()
 
 				encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
-				// send active peers
-				go func() {
-					// send active members to new node so that new node becomes a follower,
-					// or starts an election
-					send := s.ru.SendMessage(msg.IP, id, encodedMessage)
-					if !send {
-						s.logger.Println("failed to send peer info to", msg.IP)
-						s.handleDeadServer(msg.UUID, msg.IP)
-						return
-					}
-					// send existing nodes, the new node list
-					send = s.rm.SendMessage(id, encodedMessage)
-					if !send {
-						s.logger.Fatal("Failed to send multicast")
-					}
+				send := s.ru.SendMessage(msg.IP, msg.FromUUID, encodedMessage)
 
-				}()
+				if !send {
+					s.logger.Println("failed to send peer info to", msg.IP)
+					s.handleDeadServer(msg.FromUUID, msg.IP)
+					return
+				}
+
+				s.multicastPeerInfo()
+				s.logger.Println("send peerinfo")
 				break
-				// for _, peerIp := range peerIps {
+				// for index, peerIp := range peerIps {
 				// 	if peerIp == ownIP {
 				// 		continue
 				// 	}
-				// 	go func(ip string) {
+				// 	go func(ip string, id string) {
 				// 		send := s.ru.SendMessage(ip, id, encodedMessage)
 				// 		if !send {
 				// 			s.logger.Println("faild to send peer info to", ip)
-				// 			s.handleDeadServer(msg.uuid, ip)
+				// 			s.handleDeadServer(id, ip)
 				// 			return
 				// 		}
-				// 	}(peerIp)
+				// 	}(peerIp, peerIds[index])
 				// 	break
 				// }
 
@@ -83,38 +80,46 @@ func (s *Server) startUnicastMessageListener() {
 
 				s.mu.Lock()
 				id := s.id
+				s.peers = make(map[string]string)
 				higherNodeExists := false
 				for index, uuid := range unicastMessage.PeerIds {
 					s.peers[uuid] = unicastMessage.PeerIps[index]
-					if uuid != msg.UUID && uuid > msg.UUID {
+					if uuid != msg.FromUUID && uuid > msg.FromUUID {
 						higherNodeExists = true
 					}
 				}
-				s.mu.Unlock()
-
-				if id > msg.UUID || higherNodeExists {
-					// s.StopBroadcasting()
-					s.broadcaster.Stop()
+				if id > msg.FromUUID || higherNodeExists {
+					if s.state == LEADER {
+						s.broadcaster.Stop()
+					}
 					s.logger.Println("election 3")
 					go s.StartElection()
 					break
 				}
-				s.becomeFollower(msg.UUID)
+
+				if s.state == FOLLOWER && s.leaderID > msg.FromUUID {
+					s.mu.Unlock()
+					break
+				}
+				if s.state != FOLLOWER {
+					s.mu.Unlock()
+					s.becomeFollower(msg.FromUUID)
+					break
+				}
+				s.logger.Println("not sure if this should happen")
+				s.mu.Unlock()
 				break
 
 			case message.Election:
 				s.logger.Println("Got election message from", msg.IP)
-				s.mu.Lock()
-				id := s.id
-				s.mu.Unlock()
 
-				if s.id > msg.UUID {
+				if s.id > msg.FromUUID {
 					// send alive
 					s.logger.Println("sending alive")
 					encodedData := message.NewElectionAliveMessage()
-					send := s.ru.SendMessage(msg.IP, id, encodedData)
+					send := s.ru.SendMessage(msg.IP, msg.FromUUID, encodedData)
 					if !send {
-						s.handleDeadServer(msg.UUID, msg.IP)
+						s.handleDeadServer(msg.FromUUID, msg.IP)
 						s.logger.Println("failed to send alive message to", msg.IP)
 					}
 					s.logger.Println("election 2")
@@ -145,16 +150,16 @@ func (s *Server) startUnicastMessageListener() {
 					time.Sleep(2)
 					s.mu.Lock()
 					if s.state == ELECTION {
-						s.discoveredPeers[msg.UUID] = true
+						s.discoveredPeers[msg.FromUUID] = true
 					}
 					s.mu.Unlock()
 				}()
 				break
 
 			case message.ElectionVictory:
-				s.logger.Println("got election victory from", msg.IP, msg.UUID)
-				s.logger.Println("new leader", msg.UUID)
-				s.becomeFollower(msg.UUID)
+				s.logger.Println("got election victory from", msg.IP, msg.FromUUID)
+				s.logger.Println("new leader", msg.FromUUID)
+				s.becomeFollower(msg.FromUUID)
 				// s.StopBroadcasting()
 				s.broadcaster.Stop()
 				break
