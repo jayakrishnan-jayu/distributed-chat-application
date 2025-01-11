@@ -261,8 +261,8 @@ func (s *reliableSender) send(ip string, uuid string, data []byte) bool {
 		if err != nil {
 			log.Panic(err)
 		}
-		if decodedData.Tries == 20 {
-			log.Println("no acknowledgement for 20 tries assuming dead")
+		if decodedData.Tries == 5 {
+			log.Println("no acknowledgement for 5 tries assuming dead")
 			s.handleDeadNode(uuid)
 			return false
 		}

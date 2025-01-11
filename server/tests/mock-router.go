@@ -10,7 +10,7 @@ import (
 
 type MockPacketConn struct {
 	addr        *net.UDPAddr
-	Router      *MockRouter
+	router      *MockRouter
 	readBuffer  chan Packet
 	writeBuffer map[string]*bytes.Buffer
 	isClosed    bool
@@ -36,7 +36,6 @@ func NewMockRouter() *MockRouter {
 func (r *MockRouter) Register(conn *MockPacketConn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	conn.Router = r
 	r.connections[conn.LocalAddr().String()] = conn
 }
 
@@ -63,12 +62,15 @@ func (r *MockRouter) Send(toAddr string, data []byte, fromAddr net.Addr) (n int,
 	return len(data), nil
 }
 
-func NewMockPacketConn(addr string, port int) *MockPacketConn {
-	return &MockPacketConn{
+func NewMockPacketConn(addr string, port int, router *MockRouter) *MockPacketConn {
+	conn := &MockPacketConn{
 		addr:        &net.UDPAddr{IP: net.ParseIP(addr), Port: port},
 		readBuffer:  make(chan Packet, 100),
 		writeBuffer: make(map[string]*bytes.Buffer),
+		router:      router,
 	}
+	router.Register(conn)
+	return conn
 }
 
 func (m *MockPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -88,8 +90,8 @@ func (m *MockPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 func (m *MockPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	if m.Router != nil {
-		return m.Router.Send(addr.String(), p, m.addr)
+	if m.router != nil {
+		return m.router.Send(addr.String(), p, m.addr)
 	}
 	return 0, fmt.Errorf("router not set")
 }

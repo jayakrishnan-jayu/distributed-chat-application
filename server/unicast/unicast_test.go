@@ -21,16 +21,11 @@ func TestNew(t *testing.T) {
 
 	router := tests.NewMockRouter()
 
-	listnerConn1 := tests.NewMockPacketConn("192.168.1.1", UNI_L_PORT)
-	senderConn1 := tests.NewMockPacketConn("192.168.1.1", UNI_S_PORT)
+	listnerConn1 := tests.NewMockPacketConn("192.168.1.1", UNI_L_PORT, router)
+	senderConn1 := tests.NewMockPacketConn("192.168.1.1", UNI_S_PORT, router)
 
-	listnerConn2 := tests.NewMockPacketConn("192.168.1.2", UNI_L_PORT)
-	senderConn2 := tests.NewMockPacketConn("192.168.1.2", UNI_S_PORT)
-
-	router.Register(listnerConn1)
-	router.Register(listnerConn2)
-	router.Register(senderConn1)
-	router.Register(senderConn2)
+	listnerConn2 := tests.NewMockPacketConn("192.168.1.2", UNI_L_PORT, router)
+	senderConn2 := tests.NewMockPacketConn("192.168.1.2", UNI_S_PORT, router)
 
 	uuid1 := uuid.NewString()
 	uuid2 := uuid.NewString()
@@ -91,10 +86,9 @@ func TestNew(t *testing.T) {
 	}
 
 	uuid1 = uuid.NewString()
-	listnerConn1 = tests.NewMockPacketConn("192.168.1.1", UNI_L_PORT)
-	senderConn1 = tests.NewMockPacketConn("192.168.1.1", UNI_S_PORT)
-	router.Register(listnerConn1)
-	router.Register(senderConn1)
+	listnerConn1 = tests.NewMockPacketConn("192.168.1.1", UNI_L_PORT, router)
+	senderConn1 = tests.NewMockPacketConn("192.168.1.1", UNI_S_PORT, router)
+
 	msgChan1 = make(chan *unicast.Message)
 	uni1 = unicast.NewReliableUnicast(msgChan1, uuid1, senderConn1, listnerConn1)
 	go uni1.StartListener()
