@@ -21,6 +21,7 @@ type Message struct {
 	Type    MessageType
 	PeerIds []string
 	PeerIps []string
+	Clock   []uint32
 }
 
 func NewConnectToLeaderMessage() []byte {
@@ -63,8 +64,8 @@ func NewHeartbeatMessage() []byte {
 	return em
 }
 
-func NewPeerInfoMessage(PeerIds []string, PeerIps []string) []byte {
-	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps})
+func NewPeerInfoMessage(PeerIds []string, PeerIps []string, Clock []uint32) []byte {
+	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps, Clock: Clock})
 	if err != nil {
 		log.Panic(err)
 	}
@@ -88,22 +89,23 @@ func Encode(msg Message) ([]byte, error) {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.PeerIds))); err != nil {
 			return nil, err
 		}
-		for _, id := range msg.PeerIds {
+		log.Println("index", len(msg.Clock), len(msg.PeerIds))
+		for index := range len(msg.PeerIds) {
+			id := msg.PeerIds[index]
+			ip := msg.PeerIps[index]
+			clock := msg.Clock[index]
+
 			if err := binary.Write(&buf, binary.BigEndian, uint32(len(id))); err != nil {
 				return nil, err
 			}
 			buf.WriteString(id)
-		}
-
-		// Encode PeerIps
-		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.PeerIps))); err != nil {
-			return nil, err
-		}
-		for _, ip := range msg.PeerIps {
 			if err := binary.Write(&buf, binary.BigEndian, uint32(len(ip))); err != nil {
 				return nil, err
 			}
 			buf.WriteString(ip)
+			if err := binary.Write(&buf, binary.BigEndian, uint32(clock)); err != nil {
+				return nil, err
+			}
 		}
 
 	}
@@ -132,12 +134,15 @@ func Decode(data []byte) (*Message, error) {
 		return msg, nil
 	case PeerInfo:
 		// Decode PeerIds
-		var peerIdCount uint32
-		if err := binary.Read(reader, binary.BigEndian, &peerIdCount); err != nil {
+		var count uint32
+		if err := binary.Read(reader, binary.BigEndian, &count); err != nil {
 			return nil, err
 		}
-		msg.PeerIds = make([]string, peerIdCount)
-		for i := uint32(0); i < peerIdCount; i++ {
+		msg.PeerIds = make([]string, count)
+		msg.PeerIps = make([]string, count)
+		msg.Clock = make([]uint32, count)
+
+		for index := range count {
 			var idLen uint32
 			if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
 				return nil, err
@@ -146,26 +151,22 @@ func Decode(data []byte) (*Message, error) {
 			if _, err := reader.Read(id); err != nil {
 				return nil, err
 			}
-			msg.PeerIds[i] = string(id)
-		}
-
-		// Decode PeerIps
-		var peerIpCount uint32
-		if err := binary.Read(reader, binary.BigEndian, &peerIpCount); err != nil {
-			return nil, err
-		}
-		msg.PeerIps = make([]string, peerIpCount)
-		for i := uint32(0); i < peerIpCount; i++ {
-			var ipLen uint32
-			if err := binary.Read(reader, binary.BigEndian, &ipLen); err != nil {
+			msg.PeerIds[index] = string(id)
+			if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
 				return nil, err
 			}
-			ip := make([]byte, ipLen)
+			ip := make([]byte, idLen)
 			if _, err := reader.Read(ip); err != nil {
 				return nil, err
 			}
-			msg.PeerIps[i] = string(ip)
+			msg.PeerIps[index] = string(ip)
+			if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
+				return nil, err
+			}
+			msg.Clock[index] = idLen
 		}
+
+		// Decode PeerIps
 	}
 
 	return msg, nil

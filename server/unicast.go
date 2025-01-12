@@ -28,23 +28,20 @@ func (s *Server) startUnicastMessageListener() {
 				// add node to peers
 
 				s.mu.Lock()
-				s.logger.Println("got connectToLeader is leader: ", s.state == LEADER)
-				if s.state != LEADER {
+				state := s.state
+				s.logger.Println("got connectToLeader is leader: ", state == LEADER)
+				if state != LEADER {
 					s.mu.Unlock()
 					s.logger.Println("got connect to leader while not being leader")
 					return
 				}
 				s.peers[msg.FromUUID] = msg.IP
-				peerIds := make([]string, 0, len(s.peers))
-				peerIps := make([]string, 0, len(s.peers))
-				for uuid, ip := range s.peers {
-					peerIds = append(peerIds, uuid)
-					peerIps = append(peerIps, ip)
-				}
-				// ownIP := s.ip
 				s.mu.Unlock()
+				s.rm.AddPeer(msg.FromUUID)
 
-				encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
+				// ownIP := s.ip
+				encodedMessage := s.getPeerInfo()
+
 				send := s.ru.SendMessage(msg.IP, msg.FromUUID, encodedMessage)
 
 				if !send {
@@ -53,7 +50,12 @@ func (s *Server) startUnicastMessageListener() {
 					return
 				}
 
-				s.multicastPeerInfo()
+				send = s.rm.SendMessage(encodedMessage)
+				if !send {
+					s.logger.Println("failed to multicast peerinfo", msg.IP)
+					s.handleDeadServer(msg.FromUUID, msg.IP)
+					return
+				}
 				s.logger.Println("send peerinfo")
 				break
 				// for index, peerIp := range peerIps {
@@ -103,6 +105,7 @@ func (s *Server) startUnicastMessageListener() {
 				}
 				if s.state != FOLLOWER {
 					s.mu.Unlock()
+					s.rm.AddPeers(unicastMessage.PeerIds, unicastMessage.Clock)
 					s.becomeFollower(msg.FromUUID)
 					break
 				}

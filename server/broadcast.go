@@ -89,7 +89,7 @@ func (s *Server) startBroadcastMessageListener() {
 					s.logger.Println("leader id ", leaderID)
 				}
 				if clientUUIDStr == leaderID {
-					s.logger.Println("broadcast from leader", leaderID)
+					// s.logger.Println("broadcast from leader", leaderID)
 					break
 				}
 				break

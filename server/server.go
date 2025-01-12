@@ -89,7 +89,7 @@ func NewServer() (*Server, error) {
 	s.ru = unicast.NewReliableUnicast(ruMsgChan, s.id, uniSenderConn, uniListnerConn)
 
 	s.rmMsgChan = rmMsgChan
-	s.rm = multicast.NewReliableMulticast(rmMsgChan)
+	s.rm = multicast.NewReliableMulticast(s.id, rmMsgChan)
 
 	s.bMsgChan = bMsgChan
 	s.broadcaster = broadcast.NewBroadcaster(s.id, s.ip, broadcastIp.String(), bMsgChan)
@@ -159,8 +159,8 @@ func (s *Server) StartInit() {
 	// s.StopBroadcasting()
 	// wait for broadcasts from other leader nodes
 	// Wait for a random time between 150ms and 300ms
-	// randomDelay := time.Duration(rand.IntN(350)+10) * time.Millisecond
-	// time.Sleep(randomDelay)
+	randomDelay := time.Duration(rand.IntN(350)+150) * time.Millisecond
+	time.Sleep(randomDelay)
 	s.mu.Lock()
 	state := s.state
 	s.mu.Unlock()
@@ -369,41 +369,48 @@ func (s *Server) becomeFollower(leaderID string) {
 	}(time.Duration(rand.IntN(250)+250) * time.Millisecond)
 }
 
-func (s *Server) multicastPeerInfo() {
+func (s *Server) getPeerInfo() []byte {
+
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	peerIds := make([]string, 0, len(s.peers))
 	peerIps := make([]string, 0, len(s.peers))
-	id := s.id
-	// ownIP := s.ip
+	clocks := make([]uint32, 0, len(s.peers))
+
+	vc := s.rm.VectorClock()
+
 	for uuid, ip := range s.peers {
+		clock, ok := vc[uuid]
+		if !ok {
+			s.logger.Printf("failed to find frame count for uuid in vc : %s", uuid, s.state)
+			s.rm.AddPeer(uuid)
+			clock = 0
+		}
 		peerIds = append(peerIds, uuid)
 		peerIps = append(peerIps, ip)
+		clocks = append(clocks, clock)
 	}
-	s.mu.Unlock()
+	s.logger.Println(len(peerIds), len(peerIps), len(clocks))
+	encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps, clocks)
+	return encodedMessage
+}
 
-	encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps)
-	// send active peers
-	var wg sync.WaitGroup
-	go func() {
-		// send active members to new node so that new node becomes a follower,
-		// or starts an election
-		wg.Add(1)
-		defer wg.Done()
-		// send existing nodes, the new node list
-		send := s.rm.SendMessage(id, encodedMessage)
-		if !send {
-			s.logger.Fatal("Failed to send multicast")
-		}
+func (s *Server) multicastPeerInfo() {
+	send := s.rm.SendMessage(s.getPeerInfo())
+	if !send {
+		s.logger.Fatal("Failed to send multicast peer info")
+	}
 
-	}()
-	wg.Wait()
 }
 
 func (s *Server) handleDeadServer(uuid string, ip string) {
 	s.mu.Lock()
+	s.logger.Println("handling dead node", uuid)
 	delete(s.peers, uuid)
 	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
+	s.rm.HandleDeadNode(uuid)
 	s.multicastPeerInfo()
 }
 
