@@ -77,7 +77,7 @@ func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
 	}
 	jj, ok := msg.VectorClock[j]
 	if !ok {
-		m.logger.Println("vector clock not found in msg for id", j)
+		m.logger.Println("vector clock not found in msg for id", j, len(msg.VectorClock), len(m.vectorClock), msg.IP)
 		return false
 	}
 
@@ -108,6 +108,7 @@ func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
 }
 
 func (m *ReliableMulticast) SendMessage(data []byte) bool {
+	m.logger.Println("sending multicast")
 	m.mu.Lock()
 	_, ok := m.vectorClock[m.id]
 	if !ok {
@@ -143,7 +144,6 @@ func (m *ReliableMulticast) StartListener() {
 				log.Printf("Error reading from connection: %v\n", err)
 			}
 		}
-		m.mu.Lock()
 		udpAddr, ok := addr.(*net.UDPAddr)
 		if !ok {
 			log.Printf("Unexpected address type: %T", addr)
@@ -153,6 +153,7 @@ func (m *ReliableMulticast) StartListener() {
 		if err != nil {
 			log.Printf("Error decoding data %v", err)
 		}
+		m.logger.Println("got multicast")
 		go func(msg Message) {
 			// handle dead nodes
 			m.mu.Lock()
@@ -180,7 +181,7 @@ func (m *ReliableMulticast) AddPeers(ids []string, clocks []uint32) {
 		if _, ok := m.vectorClock[id]; !ok {
 			m.vectorClock[id] = clocks[index]
 		} else {
-			m.logger.Println("don't know if this should happen")
+			m.logger.Println("don't know if this should happen", m.vectorClock[id], clocks[index])
 		}
 	}
 }
@@ -202,6 +203,7 @@ func (m *ReliableMulticast) VectorClock() map[string]uint32 {
 func (m *ReliableMulticast) DeliverMessages() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.logger.Println("trying to deliver message", len(m.holdBackQueue))
 
 	delivered := true
 	for delivered {
@@ -214,10 +216,13 @@ func (m *ReliableMulticast) DeliverMessages() {
 				m.holdBackQueue = append(m.holdBackQueue[:i], m.holdBackQueue[i+1:]...)
 				delivered = true
 				break
+			} else {
+
 			}
 		}
 	}
 
+	m.logger.Println("undelivered messages", len(m.holdBackQueue))
 }
 
 func encodeMulticastMessage(msg Message) ([]byte, error) {

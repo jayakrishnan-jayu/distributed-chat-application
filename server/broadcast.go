@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -45,15 +47,15 @@ func (s *Server) startBroadcastMessageListener() {
 			if !ok {
 				s.peers[clientUUIDStr] = ip
 			}
-			state := s.state
 			// if two or more nodes assume leader position and start position,
 			// and if the current node is of lower id, restart again
-			if state == LEADER && clientUUIDStr > id {
+			if s.state == LEADER && clientUUIDStr > id {
 				// TODO: call init method
 				s.state = INIT
 				s.leaderID = ""
 				s.broadcaster.Stop()
 			}
+			state := s.state
 			leaderID := s.leaderID
 			s.mu.Unlock()
 
@@ -62,7 +64,7 @@ func (s *Server) startBroadcastMessageListener() {
 				prevLeaderBroadcastCount = 1
 				break
 			}
-			if prevLeaderBroadcastCount < 5 {
+			if prevLeaderBroadcastCount < 10 {
 				prevLeaderBroadcastCount += 1
 				break
 			}
@@ -78,6 +80,14 @@ func (s *Server) startBroadcastMessageListener() {
 				}
 				s.logger.Println("connecting to broadcaster", ip, ok, discovered)
 				go s.connectToLeader(ip, clientUUIDStr, id)
+				time.Sleep(1 * time.Second)
+				s.mu.Lock()
+				s.logger.Println("connecting to broadcaster state", s.state)
+				s.mu.Unlock()
+				// s.mu.Lock()
+				// s.state = FOLLOWER
+				// s.leaderID = clientUUIDStr
+				// s.mu.Unlock()
 				break
 			case FOLLOWER:
 				if leaderID == "" {
@@ -89,9 +99,10 @@ func (s *Server) startBroadcastMessageListener() {
 					s.logger.Println("leader id ", leaderID)
 				}
 				if clientUUIDStr == leaderID {
-					// s.logger.Println("broadcast from leader", leaderID)
+					// s.logger.Println("broadcast from leader", leaderID, ip)
 					break
 				}
+				s.logger.Println("dont' know", state, clientUUID, leaderID)
 				break
 			case ELECTION:
 				s.logger.Println("broadcast while in election ")

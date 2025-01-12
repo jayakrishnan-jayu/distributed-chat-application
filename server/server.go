@@ -156,6 +156,7 @@ func (s *Server) StartInit() {
 	s.state = INIT
 	s.mu.Unlock()
 	s.broadcaster.Stop()
+	s.logger.Println("start")
 	// s.StopBroadcasting()
 	// wait for broadcasts from other leader nodes
 	// Wait for a random time between 150ms and 300ms
@@ -410,8 +411,8 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 	delete(s.peers, uuid)
 	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
-	s.rm.HandleDeadNode(uuid)
-	s.multicastPeerInfo()
+	// s.rm.HandleDeadNode(uuid)
+	// s.multicastPeerInfo()
 }
 
 func (s *Server) KillLeaderAfter(duration time.Duration) {

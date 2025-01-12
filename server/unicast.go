@@ -27,9 +27,10 @@ func (s *Server) startUnicastMessageListener() {
 				// to connect
 				// add node to peers
 
+				s.logger.Println("got connectToLeader before loc")
 				s.mu.Lock()
 				state := s.state
-				s.logger.Println("got connectToLeader is leader: ", state == LEADER)
+				s.logger.Println("got connectToLeader is leader: ", state == LEADER, msg.IP)
 				if state != LEADER {
 					s.mu.Unlock()
 					s.logger.Println("got connect to leader while not being leader")
@@ -50,12 +51,12 @@ func (s *Server) startUnicastMessageListener() {
 					return
 				}
 
-				send = s.rm.SendMessage(encodedMessage)
-				if !send {
-					s.logger.Println("failed to multicast peerinfo", msg.IP)
-					s.handleDeadServer(msg.FromUUID, msg.IP)
-					return
-				}
+				// send = s.rm.SendMessage(encodedMessage)
+				// if !send {
+				// 	s.logger.Println("failed to multicast peerinfo", msg.IP)
+				// 	s.handleDeadServer(msg.FromUUID, msg.IP)
+				// 	return
+				// }
 				s.logger.Println("send peerinfo")
 				break
 				// for index, peerIp := range peerIps {
@@ -86,6 +87,7 @@ func (s *Server) startUnicastMessageListener() {
 				higherNodeExists := false
 				for index, uuid := range unicastMessage.PeerIds {
 					s.peers[uuid] = unicastMessage.PeerIps[index]
+					s.rm.AddPeer(uuid)
 					if uuid != msg.FromUUID && uuid > msg.FromUUID {
 						higherNodeExists = true
 					}
