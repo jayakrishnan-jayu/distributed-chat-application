@@ -36,8 +36,8 @@ type Message struct {
 	Message     []byte
 }
 
-func NewReliableMulticast(id string, msgChan chan<- *Message) *ReliableMulticast {
-	addr, err := net.ResolveUDPAddr("udp4", ROM_ADDRESS)
+func NewReliableMulticast(id string, port uint32, nodeIds []string, msgChan chan<- *Message) *ReliableMulticast {
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("239.0.0.0:%d", port))
 	if err != nil {
 		log.Panic(err)
 	}
@@ -60,15 +60,20 @@ func NewReliableMulticast(id string, msgChan chan<- *Message) *ReliableMulticast
 	m.vectorClock = make(map[string]uint32)
 	m.holdBackQueue = make([]*Message, 0)
 	m.msgChan = msgChan
-	m.logger = log.New(os.Stdout, fmt.Sprintf("[%s]multicaster ", m.id[:4]), log.Ltime)
+	m.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%d]multicaster ", m.id[:4], port), log.Ltime)
 	m.quit = make(chan interface{})
 
 	m.vectorClock[m.id] = 0
+	for _, nodeId := range nodeIds {
+		m.vectorClock[nodeId] = 0
+	}
+	m.logger.Println("New multicaster with %d nodes", len(nodeIds))
 
 	return m
 }
 
 func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
+	m.logger.Println("checking msg from", msg.UUID, msg.VectorClock)
 	j := msg.UUID
 	ij, ok := m.vectorClock[j]
 	if !ok {
@@ -116,8 +121,12 @@ func (m *ReliableMulticast) SendMessage(data []byte) bool {
 		return false
 	}
 	m.vectorClock[m.id] += 1
+	clockCopy := make(map[string]uint32)
+	for uuid, clock := range m.vectorClock {
+		clockCopy[uuid] = clock
+	}
 	m.mu.Unlock()
-	encodedData, err := encodeMulticastMessage(Message{UUID: m.id, Message: data})
+	encodedData, err := encodeMulticastMessage(Message{UUID: m.id, Message: data, VectorClock: clockCopy})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -165,26 +174,33 @@ func (m *ReliableMulticast) StartListener() {
 	}
 }
 
-func (m *ReliableMulticast) AddPeer(id string) {
+// func (m *ReliableMulticast) AddPeer(id string) {
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+// 	if _, ok := m.vectorClock[id]; !ok {
+// 		m.vectorClock[id] = 0
+// 	}
+// }
+
+func (m *ReliableMulticast) HasPeer(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.vectorClock[id]; !ok {
-		m.vectorClock[id] = 0
-	}
+	_, ok := m.vectorClock[id]
+	return ok
 }
 
-func (m *ReliableMulticast) AddPeers(ids []string, clocks []uint32) {
-	m.logger.Println("adding peers")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for index, id := range ids {
-		if _, ok := m.vectorClock[id]; !ok {
-			m.vectorClock[id] = clocks[index]
-		} else {
-			m.logger.Println("don't know if this should happen", m.vectorClock[id], clocks[index])
-		}
-	}
-}
+// func (m *ReliableMulticast) AddPeers(ids []string, clocks []uint32) {
+// 	m.logger.Println("adding peers")
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+// 	for index, id := range ids {
+// 		if _, ok := m.vectorClock[id]; !ok {
+// 			m.vectorClock[id] = clocks[index]
+// 		} else {
+// 			m.logger.Println("don't know if this should happen", m.vectorClock[id], clocks[index])
+// 		}
+// 	}
+// }
 
 func (m *ReliableMulticast) HandleDeadNode(id string) {
 
@@ -308,6 +324,9 @@ func decodeMulticastMessage(data []byte, ip string) (*Message, error) {
 
 }
 
+func (s *ReliableMulticast) Debug() {
+	s.logger.Printf("Peers: %v\n", s.vectorClock)
+}
 func (s *ReliableMulticast) Shutdown() {
 	close(s.quit)
 	s.lconn.Close()

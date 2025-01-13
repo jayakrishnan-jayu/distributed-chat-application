@@ -15,16 +15,15 @@ func main() {
 	}
 
 	go s.StartBroadcastListener()
-	go s.StartUniCastSender()
 	go s.StartUniCastListener()
 	go s.StartMulticastListener()
 
 	go s.StartInit()
 
 	// s.KillLeaderAfter(3 * time.Second)
-	// s.KillFollowerAfter(5 * time.Second)
+	s.KillFollowerAfter(5 * time.Second)
 
-	time.Sleep(15 * time.Second)
+	time.Sleep(10 * time.Second)
 	s.Shutdown()
 	s.Debug()
 }

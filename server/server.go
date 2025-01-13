@@ -5,6 +5,7 @@ import (
 	"dummy-rom/server/message"
 	"dummy-rom/server/multicast"
 	"dummy-rom/server/unicast"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -42,6 +43,7 @@ type Server struct {
 
 	rm        *multicast.ReliableMulticast
 	rmMsgChan chan *multicast.Message
+	rmPort    uint32
 
 	broadcaster *broadcast.Broadcaster
 	bMsgChan    chan *broadcast.Message
@@ -77,6 +79,12 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		log.Panic(err)
 	}
+	// randomPort, err := getRandomUDPPort()
+	// if err != nil {
+	// 	log.Panic(err)
+	// }
+	// peers := make([]string, 1)
+	// peers[0] = id.String()
 
 	s := new(Server)
 	s.state = INIT
@@ -89,7 +97,8 @@ func NewServer() (*Server, error) {
 	s.ru = unicast.NewReliableUnicast(ruMsgChan, s.id, uniSenderConn, uniListnerConn)
 
 	s.rmMsgChan = rmMsgChan
-	s.rm = multicast.NewReliableMulticast(s.id, rmMsgChan)
+	// s.rm = multicast.NewReliableMulticast(s.id, randomPort, peers, rmMsgChan)
+	// s.rmPort = randomPort
 
 	s.bMsgChan = bMsgChan
 	s.broadcaster = broadcast.NewBroadcaster(s.id, s.ip, broadcastIp.String(), bMsgChan)
@@ -107,21 +116,8 @@ func NewServer() (*Server, error) {
 }
 
 func (s *Server) Debug() {
-	s.logger.Printf("\nUUID: %s\nIP: %s\nPeers: %v\nState: %v\nLeaderID: %s\n", s.id, s.ip, s.peers, s.state, s.leaderID)
-}
-
-func (s *Server) StartUniCastSender() {
-	for {
-		select {
-		case clientUUIDStr := <-s.newServer:
-			s.mu.Lock()
-			ip := s.peers[clientUUIDStr]
-			s.logger.Printf("sending message to %s from %s", ip, s.ip)
-			s.mu.Unlock()
-			s.ru.SendMessage(ip, clientUUIDStr, []byte("Hello"))
-
-		}
-	}
+	s.logger.Printf("\nUUID: %s\nIP: %s\nPeers: %v\nState: %v\nLeaderID: %s\nMulticast Port: %d", s.id, s.ip, s.peers, s.state, s.leaderID, s.rmPort)
+	s.rm.Debug()
 }
 
 func (s *Server) connectToLeader(leaderIP string, leaderID string, id string) {
@@ -333,76 +329,53 @@ func (s *Server) sendHearbeat() {
 	}
 }
 
-func (s *Server) becomeFollower(leaderID string) {
+func (s *Server) becomeFollower(leaderID string, multicastPort uint32, peerIds []string) {
 	s.logger.Println("become follower to", leaderID)
 	s.mu.Lock()
 	s.state = FOLLOWER
+	oldLeaderID := s.leaderID
 	s.leaderID = leaderID
+	s.logger.Println(s.rmPort, multicastPort)
+	if s.rmPort != multicastPort {
+		if s.rm != nil {
+			s.rm.Shutdown()
+		}
+		s.rmPort = multicastPort
+		s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, peerIds, s.rmMsgChan)
+		go s.rm.StartListener()
+	}
 	s.mu.Unlock()
 
-	go func(interval time.Duration) {
-		t := time.NewTimer(interval)
-		defer t.Stop()
+	if oldLeaderID != leaderID {
+		go func(interval time.Duration) {
+			t := time.NewTimer(interval)
+			defer t.Stop()
 
-		for {
-			s.mu.Lock()
-			if s.state != FOLLOWER {
+			for {
+				s.mu.Lock()
+				if s.state != FOLLOWER {
+					s.mu.Unlock()
+					s.logger.Println("stopping hearbeat listener")
+					return
+				}
 				s.mu.Unlock()
-				s.logger.Println("stopping hearbeat listener")
-				return
+				<-t.C
+				s.mu.Lock()
+				diff := time.Now().Sub(s.leaderHeartbeatTimestamp)
+				newLeader := s.leaderID != leaderID
+				s.mu.Unlock()
+				if newLeader {
+					return
+				}
+				if diff > interval {
+					s.logger.Println("election 4")
+					go s.StartElection()
+					return
+				}
+				t.Reset(interval)
 			}
-			s.mu.Unlock()
-			<-t.C
-			s.mu.Lock()
-			diff := time.Now().Sub(s.leaderHeartbeatTimestamp)
-			newLeader := s.leaderID != leaderID
-			s.mu.Unlock()
-			if newLeader {
-				return
-			}
-			if diff > interval {
-				s.logger.Println("election 4")
-				go s.StartElection()
-				return
-			}
-			t.Reset(interval)
-		}
-	}(time.Duration(rand.IntN(250)+250) * time.Millisecond)
-}
-
-func (s *Server) getPeerInfo() []byte {
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	peerIds := make([]string, 0, len(s.peers))
-	peerIps := make([]string, 0, len(s.peers))
-	clocks := make([]uint32, 0, len(s.peers))
-
-	vc := s.rm.VectorClock()
-
-	for uuid, ip := range s.peers {
-		clock, ok := vc[uuid]
-		if !ok {
-			s.logger.Printf("failed to find frame count for uuid in vc : %s", uuid, s.state)
-			s.rm.AddPeer(uuid)
-			clock = 0
-		}
-		peerIds = append(peerIds, uuid)
-		peerIps = append(peerIps, ip)
-		clocks = append(clocks, clock)
+		}(time.Duration(rand.IntN(250)+250) * time.Millisecond)
 	}
-	s.logger.Println(len(peerIds), len(peerIps), len(clocks))
-	encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps, clocks)
-	return encodedMessage
-}
-
-func (s *Server) multicastPeerInfo() {
-	send := s.rm.SendMessage(s.getPeerInfo())
-	if !send {
-		s.logger.Fatal("Failed to send multicast peer info")
-	}
-
 }
 
 func (s *Server) handleDeadServer(uuid string, ip string) {
@@ -411,7 +384,11 @@ func (s *Server) handleDeadServer(uuid string, ip string) {
 	delete(s.peers, uuid)
 	delete(s.discoveredPeers, uuid)
 	s.mu.Unlock()
-	// s.rm.HandleDeadNode(uuid)
+	if s.rm != nil {
+		s.rm.HandleDeadNode(uuid)
+		s.rm.SendMessage(message.NewDeadNodeMessage(uuid, ip))
+	}
+	// s.ru.HandleDeadNode(uuid)
 	// s.multicastPeerInfo()
 }
 
@@ -437,15 +414,23 @@ func (s *Server) KillFollowerAfter(duration time.Duration) {
 	}
 	s.logger.Println("Follower will be killed")
 	go func() {
+		count := 0
 		time.Sleep(duration)
 		s.mu.Lock()
-		if s.state == FOLLOWER {
-			s.mu.Unlock()
-			s.logger.Fatal("Follower killed")
-			// s.logger.Printf("Follower killed")
-			// os.Exit(0)
-		}
+		ip := s.ip
+		state := s.state
 		s.mu.Unlock()
+		for {
+			if state == FOLLOWER {
+				count++
+				s.rm.SendMessage(message.NewApplicationMessage([]byte(fmt.Sprintf("%s: %d", ip, count))))
+				// s.logger.Fatal("Follower killed")
+				// s.logger.Printf("Follower killed")
+				// os.Exit(0)
+			}
+			time.Sleep(1 * time.Second)
+
+		}
 	}()
 }
 func (s *Server) Shutdown() {
@@ -457,14 +442,15 @@ func (s *Server) Shutdown() {
 	s.mu.Unlock()
 }
 
-// func (*Server) getRandomUDPPort() (*net.PacketConn, int, error) {
-// 	for i := 0; i < 10; i++ {
-// 		port := rand.Intn(65535-49152+1) + 49152
-// 		addr := fmt.Sprintf(":%d", port)
-// 		conn, err := net.ListenPacket("udp4", addr)
-// 		if err == nil {
-// 			return &conn, port, nil
-// 		}
-// 	}
-// 	return nil, 0, errors.New("coulb not find a free port after multiple attempts")
-// }
+func getRandomUDPPort() (uint32, error) {
+	for i := 0; i < 20; i++ {
+		port := rand.IntN(65535-49152+1) + 49152
+		addr := fmt.Sprintf(":%d", port)
+		conn, err := net.ListenPacket("udp4", addr)
+		if err == nil {
+			conn.Close()
+			return uint32(port), nil
+		}
+	}
+	return 0, errors.New("could not find a free port after multiple attempts")
+}

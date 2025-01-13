@@ -2,6 +2,7 @@ package server
 
 import (
 	"dummy-rom/server/message"
+	"dummy-rom/server/multicast"
 	"time"
 )
 
@@ -23,12 +24,12 @@ func (s *Server) startUnicastMessageListener() {
 			}
 			switch unicastMessage.Type {
 			case message.ConnectToLeader:
-				// when a new node listens to broadcast and sends a messsage
-				// to connect
-				// add node to peers
-
-				s.logger.Println("got connectToLeader before loc")
+				randomPort, err := getRandomUDPPort()
+				if err != nil {
+					s.logger.Fatal(err)
+				}
 				s.mu.Lock()
+
 				state := s.state
 				s.logger.Println("got connectToLeader is leader: ", state == LEADER, msg.IP)
 				if state != LEADER {
@@ -36,17 +37,32 @@ func (s *Server) startUnicastMessageListener() {
 					s.logger.Println("got connect to leader while not being leader")
 					return
 				}
+
 				s.peers[msg.FromUUID] = msg.IP
+				peerIds := make([]string, 0, len(s.peers))
+				peerIps := make([]string, 0, len(s.peers))
+				for uuid, ip := range s.peers {
+					s.logger.Println("peers", uuid, ip)
+					peerIds = append(peerIds, uuid)
+					peerIps = append(peerIps, ip)
+				}
+				multicastServer := multicast.NewReliableMulticast(s.id, randomPort, peerIds, s.rmMsgChan)
+				if s.rm != nil {
+					s.logger.Println("shutting down old multicast")
+					s.rm.Shutdown()
+				}
+				s.rm = multicastServer
+				s.rmPort = randomPort
+				go s.rm.StartListener()
+				ownIP := s.ip
+
+				// encodedMessage = s.getMulticastSessionChangeInfo()
 				s.mu.Unlock()
-				s.rm.AddPeer(msg.FromUUID)
 
-				// ownIP := s.ip
-				encodedMessage := s.getPeerInfo()
-
+				encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps, randomPort)
 				send := s.ru.SendMessage(msg.IP, msg.FromUUID, encodedMessage)
-
 				if !send {
-					s.logger.Println("failed to send peer info to", msg.IP)
+					s.logger.Println("failed to send peer info to new node", msg.IP)
 					s.handleDeadServer(msg.FromUUID, msg.IP)
 					return
 				}
@@ -57,37 +73,42 @@ func (s *Server) startUnicastMessageListener() {
 				// 	s.handleDeadServer(msg.FromUUID, msg.IP)
 				// 	return
 				// }
+
 				s.logger.Println("send peerinfo")
+				encodedMessage = message.NewMulticastSessionChangeMessage(peerIds, peerIps, randomPort)
+
+				for index, peerIp := range peerIps {
+					s.logger.Println("should send to ", peerIp, peerIds[index])
+					if peerIp == ownIP || peerIp == msg.IP {
+						s.logger.Println("skipping", peerIp)
+						continue
+					}
+					go func(ip string, id string) {
+						s.logger.Println("sending multicast session change info to", ip, id, randomPort)
+						send := s.ru.SendMessage(ip, id, encodedMessage)
+						if !send {
+							s.logger.Println("faild to send peer info to", ip)
+							s.handleDeadServer(id, ip)
+							return
+						}
+					}(peerIp, peerIds[index])
+				}
 				break
-				// for index, peerIp := range peerIps {
-				// 	if peerIp == ownIP {
-				// 		continue
-				// 	}
-				// 	go func(ip string, id string) {
-				// 		send := s.ru.SendMessage(ip, id, encodedMessage)
-				// 		if !send {
-				// 			s.logger.Println("faild to send peer info to", ip)
-				// 			s.handleDeadServer(id, ip)
-				// 			return
-				// 		}
-				// 	}(peerIp, peerIds[index])
-				// 	break
-				// }
 
 			case message.PeerInfo:
 				// message from leader
-				s.logger.Println("got peer info from", msg.IP)
+				s.logger.Println("got peer info from", msg.IP, unicastMessage.MulticastPort)
 				if len(unicastMessage.PeerIds) != len(unicastMessage.PeerIps) {
 					s.logger.Fatal("message.peerinfo message invalid length")
 				}
-
 				s.mu.Lock()
+
 				id := s.id
 				s.peers = make(map[string]string)
 				higherNodeExists := false
 				for index, uuid := range unicastMessage.PeerIds {
 					s.peers[uuid] = unicastMessage.PeerIps[index]
-					s.rm.AddPeer(uuid)
+					// s.rm.AddPeer(uuid)
 					if uuid != msg.FromUUID && uuid > msg.FromUUID {
 						higherNodeExists = true
 					}
@@ -101,17 +122,47 @@ func (s *Server) startUnicastMessageListener() {
 					break
 				}
 
-				if s.state == FOLLOWER && s.leaderID > msg.FromUUID {
-					s.mu.Unlock()
-					break
+				if s.state == FOLLOWER {
+					if s.leaderID > msg.FromUUID {
+						s.mu.Unlock()
+						break
+					}
+					if s.leaderID == msg.FromUUID {
+						s.mu.Unlock()
+						s.becomeFollower(msg.FromUUID, unicastMessage.MulticastPort, unicastMessage.PeerIds)
+						break
+					}
 				}
 				if s.state != FOLLOWER {
 					s.mu.Unlock()
-					s.rm.AddPeers(unicastMessage.PeerIds, unicastMessage.Clock)
-					s.becomeFollower(msg.FromUUID)
+					// s.rm.AddPeers(unicastMessage.PeerIds, unicastMessage.Clock)
+					s.becomeFollower(msg.FromUUID, unicastMessage.MulticastPort, unicastMessage.PeerIds)
 					break
 				}
 				s.logger.Println("not sure if this should happen")
+				s.mu.Unlock()
+				break
+
+			case message.MulticastSessionChange:
+				s.mu.Lock()
+				state := s.state
+				if state == LEADER || state == INIT {
+					s.mu.Unlock()
+					break
+				}
+				if state != FOLLOWER || msg.FromUUID != s.leaderID {
+					s.mu.Unlock()
+					break
+				}
+				if s.rmPort != unicastMessage.MulticastPort {
+					s.rmPort = unicastMessage.MulticastPort
+					if s.rm != nil {
+						s.rm.Shutdown()
+					}
+					s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, unicastMessage.PeerIds, s.rmMsgChan)
+					go s.rm.StartListener()
+					s.logger.Println("multicast session changed to ", s.rmPort)
+				}
 				s.mu.Unlock()
 				break
 
@@ -164,7 +215,8 @@ func (s *Server) startUnicastMessageListener() {
 			case message.ElectionVictory:
 				s.logger.Println("got election victory from", msg.IP, msg.FromUUID)
 				s.logger.Println("new leader", msg.FromUUID)
-				s.becomeFollower(msg.FromUUID)
+				s.logger.Println("is new leader greater", msg.FromUUID > s.id)
+				s.becomeFollower(msg.FromUUID, unicastMessage.MulticastPort, unicastMessage.PeerIds)
 				// s.StopBroadcasting()
 				s.broadcaster.Stop()
 				break

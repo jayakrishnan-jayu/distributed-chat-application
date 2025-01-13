@@ -59,7 +59,7 @@ func (b *Broadcaster) StartListener() {
 		if err != nil {
 			select {
 			case <-b.quit:
-				b.logger.Println("Broadcast Connection closed")
+				b.logger.Println("Broadcast Connection closed", n)
 				return
 			default:
 				b.logger.Printf("Error reading from connection: %v\n", err)
