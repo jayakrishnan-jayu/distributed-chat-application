@@ -2,6 +2,7 @@ package multicast
 
 import (
 	"bytes"
+	"dummy-rom/server/message"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ type ReliableMulticast struct {
 	id            string
 	sconn         *net.UDPConn
 	lconn         *net.UDPConn
+	port          uint32
 	vectorClock   map[string]uint32
 	holdBackQueue []*Message
 	msgChan       chan<- *Message
@@ -57,10 +59,11 @@ func NewReliableMulticast(id string, port uint32, nodeIds []string, msgChan chan
 	m.id = id
 	m.sconn = senderConn
 	m.lconn = listenerConn
+	m.port = port
 	m.vectorClock = make(map[string]uint32)
 	m.holdBackQueue = make([]*Message, 0)
 	m.msgChan = msgChan
-	m.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%d]multicaster ", m.id[:4], port), log.Ltime)
+	m.logger = log.New(os.Stdout, fmt.Sprintf("[%s][%d][multicaster] ", m.id[:4], port), log.Ltime)
 	m.quit = make(chan interface{})
 
 	m.vectorClock[m.id] = 0
@@ -140,6 +143,7 @@ func (m *ReliableMulticast) SendMessage(data []byte) bool {
 
 func (m *ReliableMulticast) StartListener() {
 
+	m.logger.Println("multicast listening on port", m.port)
 	buf := make([]byte, 1024)
 
 	for {
@@ -162,13 +166,25 @@ func (m *ReliableMulticast) StartListener() {
 		if err != nil {
 			log.Printf("Error decoding data %v", err)
 		}
-		m.logger.Println("got multicast")
+		if msg.UUID == m.id {
+			continue
+		}
+		decodedMsg, err := message.Decode(msg.Message)
+		if decodedMsg.Type == message.NewNode {
+			m.logger.Println("got multicast to add node")
+			m.AddNewNode(decodedMsg.UUID)
+		}
+		if decodedMsg.Type == message.DeadNode {
+			// m.RemoveDeadNode(decodedMsg.UUID)
+		}
 		go func(msg Message) {
 			// handle dead nodes
 			m.mu.Lock()
 			m.holdBackQueue = append(m.holdBackQueue, &msg)
 			m.mu.Unlock()
+			log.Println("trying to deliver message from multicast")
 			m.DeliverMessages()
+			log.Println("done delivering message from multicast")
 		}(*msg)
 
 	}
@@ -202,23 +218,63 @@ func (m *ReliableMulticast) HasPeer(id string) bool {
 // 	}
 // }
 
-func (m *ReliableMulticast) HandleDeadNode(id string) {
+func (m *ReliableMulticast) RemoveDeadNode(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.vectorClock[id]; !ok {
+		log.Println("node not found in vector clock to delete")
+		return
+	}
+	delete(m.vectorClock, id)
+	j := 0
+	for i := range len(m.holdBackQueue) {
+		if m.holdBackQueue[i].UUID == id {
+			continue
+		}
+		m.holdBackQueue[j] = m.holdBackQueue[i]
+		delete(m.holdBackQueue[j].VectorClock, id)
+		j++
+	}
+	m.holdBackQueue = m.holdBackQueue[:j]
 
+}
+
+func (m *ReliableMulticast) AddNewNode(id string) {
+	m.Debug()
+	m.logger.Println("adding new Node", id)
+	m.mu.Lock()
+	if _, ok := m.vectorClock[id]; ok && id != m.id {
+		log.Println("node already in vector clock %s | %s", m.id, id)
+	} else {
+		m.vectorClock[id] = 0
+	}
+	for i := range len(m.holdBackQueue) {
+		if _, ok := m.holdBackQueue[i].VectorClock[id]; !ok {
+			m.holdBackQueue[i].VectorClock[id] = 0
+			if id == m.id {
+				m.logger.Println("hold back queue doesn't have node clock")
+			}
+		}
+	}
+	m.logger.Println("done adding a new node")
+	m.mu.Unlock()
+	// m.Debug()
+	m.DeliverMessages()
 }
 
 func (m *ReliableMulticast) VectorClock() map[string]uint32 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	result := make(map[string]uint32, len(m.vectorClock))
 	for id, clock := range m.vectorClock {
 		result[id] = clock
 	}
+	m.mu.Unlock()
 	return result
 }
 
 func (m *ReliableMulticast) DeliverMessages() {
+	m.logger.Println("trying to deliver")
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.logger.Println("trying to deliver message", len(m.holdBackQueue))
 
 	delivered := true
@@ -237,6 +293,7 @@ func (m *ReliableMulticast) DeliverMessages() {
 			}
 		}
 	}
+	m.mu.Unlock()
 
 	m.logger.Println("undelivered messages", len(m.holdBackQueue))
 }
@@ -325,9 +382,19 @@ func decodeMulticastMessage(data []byte, ip string) (*Message, error) {
 }
 
 func (s *ReliableMulticast) Debug() {
-	s.logger.Printf("Peers: %v\n", s.vectorClock)
+	count := 0
+	for id, vc := range s.vectorClock {
+		count++
+		s.logger.Println(count, "Peer: ", id, " -", vc)
+	}
+	s.logger.Println("holdBackQueue")
+	for _, msg := range s.holdBackQueue {
+		s.logger.Println(msg.IP, msg.VectorClock)
+	}
+
 }
 func (s *ReliableMulticast) Shutdown() {
+	s.logger.Println("shutting down multicaster with port", s.port)
 	close(s.quit)
 	s.lconn.Close()
 	s.sconn.Close()

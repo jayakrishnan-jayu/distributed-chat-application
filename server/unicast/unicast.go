@@ -154,7 +154,7 @@ func (s *reliableListener) start() {
 		}
 
 		if msg.ToUUID != s.uuid {
-			log.Println("unicast message: uuid does not match current uuid", msg.ToUUID, s.uuid)
+			log.Println("unicast message: uuid does not match current uuid, go to:", msg.ToUUID, ", mine:", s.uuid)
 			continue
 		}
 

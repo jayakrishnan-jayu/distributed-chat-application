@@ -16,6 +16,7 @@ const (
 	Heartbeat
 	Application
 	DeadNode
+	NewNode
 	PeerInfo
 	MulticastSessionChange
 )
@@ -47,8 +48,17 @@ func NewElectionMessage() []byte {
 	return em
 }
 
-func NewElectionVictoryMessage() []byte {
-	em, err := Encode(Message{Type: ElectionVictory})
+//
+// func NewElectionVictoryMessage() []byte {
+// 	em, err := Encode(Message{Type: ElectionVictory})
+// 	if err != nil {
+// 		log.Panic(err)
+// 	}
+// 	return em
+// }
+
+func NewElectionVictoryMessage(PeerIds []string, PeerIps []string, MulticastPort uint32, Clock []uint32) []byte {
+	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort, Clock: Clock})
 	if err != nil {
 		log.Panic(err)
 	}
@@ -87,16 +97,24 @@ func NewDeadNodeMessage(UUID string, IP string) []byte {
 	return em
 }
 
-func NewMulticastSessionChangeMessage(PeerIds []string, PeerIps []string, MulticastPort uint32) []byte {
-	em, err := Encode(Message{Type: MulticastSessionChange, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort})
+func NewNewNodeMessage(UUID string, IP string) []byte {
+	em, err := Encode(Message{Type: NewNode, UUID: UUID, IP: IP})
 	if err != nil {
 		log.Panic(err)
 	}
 	return em
 }
 
-func NewPeerInfoMessage(PeerIds []string, PeerIps []string, MulticastPort uint32) []byte {
-	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort})
+// func NewMulticastSessionChangeMessage(PeerIds []string, PeerIps []string, MulticastPort uint32) []byte {
+// 	em, err := Encode(Message{Type: MulticastSessionChange, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort})
+// 	if err != nil {
+// 		log.Panic(err)
+// 	}
+// 	return em
+// }
+
+func NewPeerInfoMessage(PeerIds []string, PeerIps []string, MulticastPort uint32, Clock []uint32) []byte {
+	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort, Clock: Clock})
 	if err != nil {
 		log.Panic(err)
 	}
@@ -120,7 +138,7 @@ func Encode(msg Message) ([]byte, error) {
 		buf.Write(msg.Msg)
 	}
 
-	if msg.Type == DeadNode {
+	if msg.Type == DeadNode || msg.Type == NewNode {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.UUID))); err != nil {
 			return nil, err
 		}
@@ -139,7 +157,7 @@ func Encode(msg Message) ([]byte, error) {
 		for index := range len(msg.PeerIds) {
 			id := msg.PeerIds[index]
 			ip := msg.PeerIps[index]
-			// clock := msg.Clock[index]
+			clock := msg.Clock[index]
 
 			if err := binary.Write(&buf, binary.BigEndian, uint32(len(id))); err != nil {
 				return nil, err
@@ -149,9 +167,9 @@ func Encode(msg Message) ([]byte, error) {
 				return nil, err
 			}
 			buf.WriteString(ip)
-			// if err := binary.Write(&buf, binary.BigEndian, uint32(clock)); err != nil {
-			// 	return nil, err
-			// }
+			if err := binary.Write(&buf, binary.BigEndian, uint32(clock)); err != nil {
+				return nil, err
+			}
 		}
 		if err := binary.Write(&buf, binary.BigEndian, uint32(msg.MulticastPort)); err != nil {
 			return nil, err
@@ -189,7 +207,7 @@ func Decode(data []byte) (*Message, error) {
 		}
 	}
 
-	if msg.Type == DeadNode {
+	if msg.Type == DeadNode || msg.Type == NewNode {
 
 		var idLen uint32
 		if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
@@ -217,7 +235,7 @@ func Decode(data []byte) (*Message, error) {
 		}
 		msg.PeerIds = make([]string, count)
 		msg.PeerIps = make([]string, count)
-		// msg.Clock = make([]uint32, count)
+		msg.Clock = make([]uint32, count)
 
 		for index := range count {
 			var idLen uint32
@@ -237,10 +255,10 @@ func Decode(data []byte) (*Message, error) {
 				return nil, err
 			}
 			msg.PeerIps[index] = string(ip)
-			// if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
-			// 	return nil, err
-			// }
-			// msg.Clock[index] = idLen
+			if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
+				return nil, err
+			}
+			msg.Clock[index] = idLen
 		}
 		if err := binary.Read(reader, binary.BigEndian, &msg.MulticastPort); err != nil {
 			return nil, err

@@ -14,14 +14,14 @@ func main() {
 		log.Panic(err)
 	}
 
-	go s.StartBroadcastListener()
-	go s.StartUniCastListener()
-	go s.StartMulticastListener()
+	// go s.StartBroadcastListener()
+	// go s.StartUniCastListener()
+	// go s.StartMulticastListener()
 
-	go s.StartInit()
+	s.Run()
 
 	// s.KillLeaderAfter(3 * time.Second)
-	s.KillFollowerAfter(5 * time.Second)
+	// s.KillFollowerAfter(5 * time.Second)
 
 	time.Sleep(10 * time.Second)
 	s.Shutdown()

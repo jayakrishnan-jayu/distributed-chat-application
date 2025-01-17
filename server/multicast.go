@@ -8,6 +8,7 @@ func (s *Server) StartMulticastListener() {
 }
 
 func (s *Server) StartMulticastMessageListener() {
+	s.logger.Println("started multicast message listner")
 	for {
 		select {
 		case <-s.quit:
@@ -33,12 +34,18 @@ func (s *Server) StartMulticastMessageListener() {
 			// }
 
 			switch decodedMsg.Type {
+			case message.NewNode:
+				s.logger.Println("new node from multicast", decodedMsg.UUID, decodedMsg.IP)
+				s.mu.Lock()
+				s.peers[decodedMsg.UUID] = decodedMsg.IP
+				// s.rm.HandleDeadNode(decodedMsg.UUID)
+				s.mu.Unlock()
 			case message.DeadNode:
 				s.logger.Println("dead node from multicast", decodedMsg.UUID, decodedMsg.IP)
 				s.mu.Lock()
 				delete(s.peers, decodedMsg.UUID)
 				delete(s.discoveredPeers, decodedMsg.UUID)
-				s.rm.HandleDeadNode(decodedMsg.UUID)
+				// s.rm.HandleDeadNode(decodedMsg.UUID)
 				s.mu.Unlock()
 				break
 
