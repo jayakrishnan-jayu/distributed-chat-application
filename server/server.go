@@ -187,7 +187,7 @@ func (s *Server) StartToInit(_ *StateMachineMessage) {
 	go s.StartMulticastMessageListener()
 	//
 	// // randomDuration := time.Duration(rand.IntN(4)+1) * time.Second
-	randomDuration := time.Duration(rand.IntN(4)+2) * time.Second
+	randomDuration := time.Duration(rand.IntN(6)) * time.Second
 	// randomDuration := time.Duration(0 * time.Second)
 	ok, msg := s.broadcaster.IsAnyOneBroadcasting(randomDuration)
 	emptyChannel(s.bMsgChan)
@@ -303,23 +303,25 @@ func (s *Server) FollowerToBecomeLeader(msg *StateMachineMessage) {
 }
 
 func (s *Server) FollowerToElection(msg *StateMachineMessage) {
-	// s.stateChan <- ELECTION
-	// s.mu.Lock()
-	// s.leaderID = ""
-	// highestID := true
-	// peers := make(map[string]string, len(s.peers))
-	// for uuid, ip := range s.peers {
-	// 	if uuid > s.id {
-	// 		highestID = false
-	// 	}
-	// 	peers[uuid] = ip
-	// }
-	// s.mu.Unlock()
-	//
-	// if highestID {
-	// 	s.sm.ChangeTo(BECOME_LEADER, nil)
-	// 	return
-	// }
+	s.stateChan <- ELECTION
+	s.mu.Lock()
+	oldLeaderID := s.leaderID
+	s.leaderID = ""
+	highestID := true
+	s.logger.Println("follower to election old leader id: ", oldLeaderID)
+	peers := make(map[string]string, len(s.peers))
+	for uuid, ip := range s.peers {
+		if oldLeaderID != uuid && uuid > s.id {
+			highestID = false
+		}
+		peers[uuid] = ip
+	}
+	s.mu.Unlock()
+
+	if highestID {
+		s.sm.ChangeTo(BECOME_LEADER, nil)
+		return
+	}
 	//
 	// var wg sync.WaitGroup
 	//
@@ -352,16 +354,17 @@ func (s *Server) FollowerToFollower(msg *StateMachineMessage) {
 
 }
 func (s *Server) BecomeLeaderToLeader(msg *StateMachineMessage) {
-	// s.stateChan <- LEADER
 }
 func (s *Server) BecomeLeaderToFollower(msg *StateMachineMessage) {
 
 }
 func (s *Server) ElectionToFollower(msg *StateMachineMessage) {
-
+	s.stateChan <- FOLLOWER
 }
 func (s *Server) ElectionToBecomeLeader(msg *StateMachineMessage) {
-	// s.stateChan <- BECOME_LEADER
+	s.stateChan <- BECOME_LEADER
+	s.rm.SendMessage(message.NewElectionVictoryMessage([]string{}, []string{}, 0, []uint32{}))
+	s.stateChan <- LEADER
 
 }
 func (s *Server) ElectionToElection(msg *StateMachineMessage) {

@@ -20,7 +20,7 @@ func main() {
 
 	s.Run()
 
-	// s.KillLeaderAfter(3 * time.Second)
+	s.KillLeaderAfter(5 * time.Second)
 	// s.KillFollowerAfter(5 * time.Second)
 
 	time.Sleep(10 * time.Second)

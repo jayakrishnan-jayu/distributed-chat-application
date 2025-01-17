@@ -49,6 +49,12 @@ func (s *Server) StartMulticastMessageListener() {
 				s.mu.Unlock()
 				break
 
+			case message.ElectionVictory:
+				s.logger.Println("Election victory from", msg.UUID, s.state)
+				s.mu.Lock()
+				s.leaderID = msg.UUID
+				s.mu.Unlock()
+				s.sm.ChangeTo(FOLLOWER, nil)
 			case message.Application:
 				s.logger.Println("\tApplicationMSG: ", string(decodedMsg.Msg))
 				break

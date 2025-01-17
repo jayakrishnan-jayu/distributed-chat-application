@@ -76,21 +76,21 @@ func NewReliableMulticast(id string, port uint32, nodeIds []string, msgChan chan
 }
 
 func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
-	m.logger.Println("checking msg from", msg.UUID, msg.VectorClock)
+	// m.logger.Println("checking msg from", msg.UUID, msg.VectorClock)
 	j := msg.UUID
 	ij, ok := m.vectorClock[j]
 	if !ok {
-		m.logger.Println("vector clock not found for id", j)
+		// m.logger.Println("vector clock not found for id", j)
 		return false
 	}
 	jj, ok := msg.VectorClock[j]
 	if !ok {
-		m.logger.Println("vector clock not found in msg for id", j, len(msg.VectorClock), len(m.vectorClock), msg.IP)
+		// m.logger.Println("vector clock not found in msg for id", j, len(msg.VectorClock), len(m.vectorClock), msg.IP)
 		return false
 	}
 
 	if jj != ij+1 {
-		m.logger.Println("can not deliver message until", jj, ij, j)
+		// m.logger.Println("can not deliver message until", jj, ij, j)
 		// TODO
 		// send nack
 		return false
@@ -102,11 +102,11 @@ func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
 		}
 		jk, ok := msg.VectorClock[k]
 		if !ok {
-			m.logger.Println("vector clock not found in msg", k)
+			// m.logger.Println("vector clock not found in msg", k)
 			return false
 		}
 		if jk > ik {
-			m.logger.Println("can not deliver messages until k", jk, ik, k)
+			// m.logger.Println("can not deliver messages until k", jk, ik, k)
 			// send nack
 			return false
 		}

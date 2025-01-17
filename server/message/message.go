@@ -58,7 +58,7 @@ func NewElectionMessage() []byte {
 // }
 
 func NewElectionVictoryMessage(PeerIds []string, PeerIps []string, MulticastPort uint32, Clock []uint32) []byte {
-	em, err := Encode(Message{Type: PeerInfo, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort, Clock: Clock})
+	em, err := Encode(Message{Type: ElectionVictory, PeerIds: PeerIds, PeerIps: PeerIps, MulticastPort: MulticastPort, Clock: Clock})
 	if err != nil {
 		log.Panic(err)
 	}
