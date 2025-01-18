@@ -3,7 +3,9 @@ package main
 import (
 	"dummy-rom/server"
 	"log"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -20,10 +22,21 @@ func main() {
 
 	s.Run()
 
-	s.KillLeaderAfter(5 * time.Second)
-	// s.KillFollowerAfter(5 * time.Second)
+	// s.KillLeaderAfter(5 * time.Second)
+	// s.KillFollowerAfter(4 * time.Second)
 
-	time.Sleep(10 * time.Second)
-	s.Shutdown()
-	s.Debug()
+	// time.Sleep(10 * time.Second)
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		s.Shutdown()
+		s.Debug()
+		os.Exit(0)
+	}()
+	for {
+
+	}
+	// s.Shutdown()
+	// s.Debug()
 }

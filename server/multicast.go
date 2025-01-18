@@ -1,6 +1,9 @@
 package server
 
-import "dummy-rom/server/message"
+import (
+	"dummy-rom/server/message"
+	"dummy-rom/server/multicast"
+)
 
 func (s *Server) StartMulticastListener() {
 	go s.StartMulticastMessageListener()
@@ -34,12 +37,29 @@ func (s *Server) StartMulticastMessageListener() {
 			// }
 
 			switch decodedMsg.Type {
-			case message.NewNode:
-				s.logger.Println("new node from multicast", decodedMsg.UUID, decodedMsg.IP)
+			// case message.NewNode:
+			// 	s.logger.Println("new node from multicast", decodedMsg.UUID, decodedMsg.IP)
+			// 	s.mu.Lock()
+			// 	s.peers[decodedMsg.UUID] = decodedMsg.IP
+			// 	s.Debug()
+			// 	// s.rm.HandleDeadNode(decodedMsg.UUID)
+			// 	s.mu.Unlock()
+			case message.MulticastSessionChange:
+				s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
 				s.mu.Lock()
-				s.peers[decodedMsg.UUID] = decodedMsg.IP
-				// s.rm.HandleDeadNode(decodedMsg.UUID)
+				s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
+				s.peers = make(map[string]string, len(decodedMsg.PeerIds))
+				for index, id := range decodedMsg.PeerIds {
+					s.peers[id] = decodedMsg.PeerIps[index]
+				}
+				newMulticastSession := multicast.NewReliableMulticast(s.id, decodedMsg.MulticastPort, decodedMsg.PeerIds, s.rmMsgChan)
+				s.rm.Shutdown()
+				s.rm = newMulticastSession
+				s.rmPort = decodedMsg.MulticastPort
 				s.mu.Unlock()
+				go s.rm.StartListener()
+				break
+
 			case message.DeadNode:
 				s.logger.Println("dead node from multicast", decodedMsg.UUID, decodedMsg.IP)
 				s.mu.Lock()
@@ -50,11 +70,22 @@ func (s *Server) StartMulticastMessageListener() {
 				break
 
 			case message.ElectionVictory:
-				s.logger.Println("Election victory from", msg.UUID, s.state)
 				s.mu.Lock()
+				state := s.state
+				s.logger.Println("Election victory from", msg.UUID, state)
 				s.leaderID = msg.UUID
+				s.logger.Println("new leaderID", s.leaderID, state)
+				s.logger.Println("new leaderIP", s.peers[s.leaderID], state)
+				if state == FOLLOWER || state == ELECTION {
+					s.leaderID = msg.UUID
+					delete(s.peers, decodedMsg.OldLeaderID)
+					s.mu.Unlock()
+					s.sm.ChangeTo(FOLLOWER, nil)
+					break
+				}
 				s.mu.Unlock()
-				s.sm.ChangeTo(FOLLOWER, nil)
+				s.logger.Println("election victory in invalid state")
+				break
 			case message.Application:
 				s.logger.Println("\tApplicationMSG: ", string(decodedMsg.Msg))
 				break

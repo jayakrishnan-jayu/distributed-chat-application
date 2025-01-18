@@ -27,6 +27,7 @@ func (s *Server) StartHearbeat(leaderIP string, serverUUID string, interval time
 		}
 		t := time.NewTimer(interval)
 		defer t.Stop()
+		s.logger.Println("sending heartbeat to", leaderIP)
 		for {
 			select {
 			case <-quit:

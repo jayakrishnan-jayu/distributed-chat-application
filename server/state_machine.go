@@ -27,8 +27,9 @@ func WrapAction(fn func(*StateMachineMessage)) Action {
 }
 
 type StateMachineMessage struct {
-	Broadcast *broadcast.Message
-	Unicast   *unicast.Message
+	Broadcast  *broadcast.Message
+	Unicast    *unicast.Message
+	ElectionID string
 }
 
 type StateMachine struct {

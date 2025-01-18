@@ -41,20 +41,6 @@ services:
     ports:
       - "6063:6060" # Map host port 6063 to container port 6060 for pprof
 
-  server4:
-    image: golang
-    container_name: server4
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command: ["sh", "run.sh"]
-    environment:
-      - SERVER_NAME=server4
-    networks:
-      - go_network
-    ports:
-      - "6064:6060" # Map host port 6064 to container port 6060 for pprof
-
 networks:
   go_network:
     driver: bridge

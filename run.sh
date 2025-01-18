@@ -3,8 +3,8 @@
 PROGRAM="go run main.go" 
 
 # $PROGRAM
-# while true; do
-    # echo "Starting program..."
+while true; do
+    echo "Starting program..."
     #
     $PROGRAM
     EXIT_CODE=$?
@@ -15,7 +15,7 @@ PROGRAM="go run main.go"
         continue
     fi
     #
-    # echo "Program exited successfully or with a non-restart code. Exiting loop."
-#     break
-# done
+    echo "Program exited successfully or with a non-restart code. Exiting loop."
+    break
+done
 

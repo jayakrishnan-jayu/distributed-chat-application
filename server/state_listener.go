@@ -79,7 +79,7 @@ func (st *ServerStateListener) LeaderStateStart() {
 		}
 		st.server.mu.Unlock()
 
-		t := time.NewTimer(1 * time.Second)
+		t := time.NewTimer(5 * time.Second)
 		for {
 			select {
 			case <-st.quit:
@@ -100,10 +100,10 @@ func (st *ServerStateListener) LeaderStateStart() {
 						break
 					}
 					st.logger.Println("node hb", time.Now().Sub(lastHB), uuid, st.server.peers[uuid])
-					if time.Now().Sub(lastHB) > 700*time.Millisecond {
+					if time.Now().Sub(lastHB) > 1000*time.Millisecond {
 						st.logger.Println("dead node last hb", time.Now().Sub(lastHB), uuid, st.server.peers[uuid])
 						// delete(peers, uuid)
-						// go st.server.handleDeadServer(uuid)
+						go st.server.handleDeadServer(uuid)
 					}
 				}
 				st.server.mu.Unlock()
@@ -115,7 +115,7 @@ func (st *ServerStateListener) LeaderStateStart() {
 
 	go func() {
 		higherNodeBChan := make(chan *broadcast.Message)
-		st.server.broadcaster.HigherNodeBroadcasting(leaderID, higherNodeBChan, st.quit)
+		st.server.broadcaster.StartBroadcastListener(higherNodeBChan, st.quit)
 		for {
 			select {
 			case <-st.quit:
@@ -124,6 +124,9 @@ func (st *ServerStateListener) LeaderStateStart() {
 				return
 
 			case msg := <-higherNodeBChan:
+				if msg.UUID < leaderID {
+					continue
+				}
 				st.logger.Println("another leader node is broadcasting", msg.UUID)
 				st.server.sm.ChangeTo(INIT, &StateMachineMessage{Broadcast: msg})
 				return
@@ -155,13 +158,12 @@ func (st *ServerStateListener) FollowerStateStart() {
 	leaderID := st.server.leaderID
 	go st.server.StartHearbeat(st.server.peers[leaderID], st.server.id, 180*time.Millisecond, st.quit)
 
-	st.server.broadcaster.StartHeartbeatListener(st.quit)
+	msgChan := make(chan *broadcast.Message, 5)
+	// listen for heartbeat from leader broadcast
+	st.server.broadcaster.StartBroadcastListener(msgChan, st.quit)
 
-	go func() {
-		st.logger.Println("emptying chan")
-		emptyChannel(st.server.bMsgChan)
-		st.logger.Println("done emptying chan")
-		t := time.NewTicker(1 * time.Second)
+	go func(msgChan chan *broadcast.Message) {
+		t := time.NewTicker(2 * time.Second)
 		lastHeartBeat := time.Now()
 		defer t.Stop()
 		for {
@@ -172,73 +174,70 @@ func (st *ServerStateListener) FollowerStateStart() {
 			case <-t.C:
 				st.logger.Println("heartbeat", time.Now().Sub(lastHeartBeat))
 				if time.Now().Sub(lastHeartBeat) > 500*time.Millisecond {
-					st.server.sm.ChangeTo(ELECTION, nil)
+					st.server.mu.Lock()
+					currentLeaderID := st.server.leaderID
+					st.server.mu.Unlock()
+					if currentLeaderID == leaderID {
+						st.server.sm.ChangeTo(ELECTION, nil)
+						return
+					}
+					st.logger.Println("old leader heartbeat, not going to election because of new leader")
 					return
 				}
 				t.Reset(1 * time.Second)
 
-			case msg := <-st.server.bMsgChan:
+			case msg := <-msgChan:
 				if msg.UUID == leaderID {
 					lastHeartBeat = time.Now()
 				}
-			case msg := <-st.server.uMsgChan:
-				dMsg, _ := message.Decode(msg.Message)
-				switch dMsg.Type {
-				case message.ElectionVictory:
-					st.server.mu.Lock()
-					_, ok := st.server.peers[dMsg.UUID]
-					st.server.mu.Unlock()
-					st.logger.Println("go election victory from", dMsg.IP, ok)
-
-				}
 			}
 		}
-	}()
+	}(msgChan)
 }
 
-func (st *ServerStateListener) BecomeLeaderStateStart() {
-	st.logger.Println("BecomeLeadeStateStart")
-	vc := st.server.rm.VectorClock()
-	st.logger.Println("VectorClockj")
-	st.server.mu.Lock()
-	st.logger.Println("server mu lock")
-	peerIds := make([]string, 0, len(st.server.peers))
-	peerIps := make([]string, 0, len(st.server.peers))
-	clocks := make([]uint32, 0, len(st.server.peers))
-
-	rmPort := st.server.rmPort
-	for uuid, ip := range st.server.peers {
-		clock, ok := vc[uuid]
-		if !ok {
-			st.logger.Panicf("failed to find frame count for uuid in vc: %s", uuid)
-		}
-		peerIds = append(peerIds, uuid)
-		peerIps = append(peerIps, ip)
-		clocks = append(clocks, clock)
-	}
-	// var wg sync.WaitGroup
-
-	for uuid, ip := range st.server.peers {
-		if uuid == st.server.id {
-			continue
-		}
-		go func(uuid string, ip string) {
-			// defer wg.Done()
-			victoryMessage := message.NewElectionVictoryMessage(peerIds, peerIps, rmPort, clocks)
-			st.server.logger.Println("sending election victory to", ip)
-			send := st.server.ru.SendMessage(ip, uuid, victoryMessage)
-			if !send {
-				// TODO: handle node failure
-				// s.handleDeadServer(uuid, ip)
-				log.Panic("TODO: failed to send victory message to ", ip)
-			}
-
-			st.server.logger.Println("done sending", ip)
-		}(uuid, ip)
-	}
-	st.logger.Println("server mu unlocking")
-	st.server.mu.Unlock()
-
-	st.logger.Println("server mu unlock")
-	st.server.sm.ChangeTo(LEADER, nil)
-}
+// func (st *ServerStateListener) BecomeLeaderStateStart() {
+// 	// st.logger.Println("BecomeLeadeStateStart")
+// 	// vc := st.server.rm.VectorClock()
+// 	// st.logger.Println("VectorClockj")
+// 	st.server.mu.Lock()
+// 	st.logger.Println("server mu lock")
+// 	peerIds := make([]string, 0, len(st.server.peers))
+// 	peerIps := make([]string, 0, len(st.server.peers))
+// 	clocks := make([]uint32, 0, len(st.server.peers))
+//
+// 	rmPort := st.server.rmPort
+// 	for uuid, ip := range st.server.peers {
+// 		// clock, ok := vc[uuid]
+// 		// if !ok {
+// 		// 	st.logger.Panicf("failed to find frame count for uuid in vc: %s", uuid)
+// 		// }
+// 		peerIds = append(peerIds, uuid)
+// 		peerIps = append(peerIps, ip)
+// 		clocks = append(clocks, 0)
+// 	}
+// 	// var wg sync.WaitGroup
+//
+// 	for uuid, ip := range st.server.peers {
+// 		if uuid == st.server.id {
+// 			continue
+// 		}
+// 		go func(uuid string, ip string) {
+// 			// defer wg.Done()
+// 			victoryMessage := message.NewElectionVictoryMessage(peerIds, peerIps, rmPort, clocks)
+// 			st.server.logger.Println("sending election victory to", ip)
+// 			send := st.server.ru.SendMessage(ip, uuid, victoryMessage)
+// 			if !send {
+// 				// TODO: handle node failure
+// 				// s.handleDeadServer(uuid, ip)
+// 				log.Panic("TODO: failed to send victory message to ", ip)
+// 			}
+//
+// 			st.server.logger.Println("done sending", ip)
+// 		}(uuid, ip)
+// 	}
+// 	st.logger.Println("server mu unlocking")
+// 	st.server.mu.Unlock()
+//
+// 	st.logger.Println("server mu unlock")
+// 	st.server.sm.ChangeTo(LEADER, nil)
+// }

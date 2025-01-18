@@ -76,7 +76,7 @@ func NewReliableMulticast(id string, port uint32, nodeIds []string, msgChan chan
 }
 
 func (m *ReliableMulticast) CanDeliver(msg *Message) bool {
-	// m.logger.Println("checking msg from", msg.UUID, msg.VectorClock)
+	m.logger.Println("checking msg from ", msg.UUID[:4], msg.VectorClock)
 	j := msg.UUID
 	ij, ok := m.vectorClock[j]
 	if !ok {
@@ -137,6 +137,7 @@ func (m *ReliableMulticast) SendMessage(data []byte) bool {
 	if err != nil {
 		log.Fatal(err)
 	}
+	m.logger.Println("send multicast")
 	return true
 
 }
@@ -157,6 +158,7 @@ func (m *ReliableMulticast) StartListener() {
 				log.Printf("Error reading from connection: %v\n", err)
 			}
 		}
+		m.logger.Println("got multicast")
 		udpAddr, ok := addr.(*net.UDPAddr)
 		if !ok {
 			log.Printf("Unexpected address type: %T", addr)
@@ -167,6 +169,7 @@ func (m *ReliableMulticast) StartListener() {
 			log.Printf("Error decoding data %v", err)
 		}
 		if msg.UUID == m.id {
+			m.logger.Println("multicast from self, skipping", msg.UUID[:4], m.id[:4], ".")
 			continue
 		}
 		decodedMsg, err := message.Decode(msg.Message)

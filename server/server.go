@@ -73,6 +73,7 @@ type Server struct {
 
 	peers           map[string]string
 	discoveredPeers map[string]bool
+	electionMap     map[string]bool
 	quit            chan interface{}
 	newServer       chan string
 	mu              sync.Mutex
@@ -181,13 +182,13 @@ func (s *Server) Run() {
 func (s *Server) StartToInit(_ *StateMachineMessage) {
 	s.stateChan <- INIT
 	go s.ru.StartListener()
-	go s.broadcaster.StartListener()
+	// go s.broadcaster.StartListener()
 	go s.startUnicastMessageListener()
 	go s.rm.StartListener()
 	go s.StartMulticastMessageListener()
 	//
 	// // randomDuration := time.Duration(rand.IntN(4)+1) * time.Second
-	randomDuration := time.Duration(rand.IntN(6)) * time.Second
+	randomDuration := time.Duration(rand.IntN(6)+1) * time.Second
 	// randomDuration := time.Duration(0 * time.Second)
 	ok, msg := s.broadcaster.IsAnyOneBroadcasting(randomDuration)
 	emptyChannel(s.bMsgChan)
@@ -273,6 +274,7 @@ func (s *Server) BecomeFollowerToFollower(msg *StateMachineMessage) {
 	s.stateChan <- FOLLOWER
 	s.mu.Lock()
 	s.joinMulticastFromPeerInfo(msg.Unicast)
+	s.Debug()
 	// isHighestID := s.isHighestID()
 	s.mu.Unlock()
 	//
@@ -305,21 +307,28 @@ func (s *Server) FollowerToBecomeLeader(msg *StateMachineMessage) {
 func (s *Server) FollowerToElection(msg *StateMachineMessage) {
 	s.stateChan <- ELECTION
 	s.mu.Lock()
+
+	s.electionMap = map[string]bool{}
 	oldLeaderID := s.leaderID
 	s.leaderID = ""
 	highestID := true
 	s.logger.Println("follower to election old leader id: ", oldLeaderID)
 	peers := make(map[string]string, len(s.peers))
 	for uuid, ip := range s.peers {
+		s.logger.Println(oldLeaderID != uuid, uuid > s.id, ip, uuid[:4])
 		if oldLeaderID != uuid && uuid > s.id {
 			highestID = false
+			peers[uuid] = ip
+			s.electionMap[uuid] = false
+			// go func(uuid string, ip string) {
+			//                 s.ru.se
+			// }(uuid, ip)
 		}
-		peers[uuid] = ip
 	}
 	s.mu.Unlock()
 
 	if highestID {
-		s.sm.ChangeTo(BECOME_LEADER, nil)
+		s.sm.ChangeTo(BECOME_LEADER, &StateMachineMessage{ElectionID: oldLeaderID})
 		return
 	}
 	//
@@ -351,7 +360,7 @@ func (s *Server) FollowerToElection(msg *StateMachineMessage) {
 	// s.sm.ChangeTo(BECOME_LEADER, nil)
 }
 func (s *Server) FollowerToFollower(msg *StateMachineMessage) {
-
+	s.stateChan <- FOLLOWER
 }
 func (s *Server) BecomeLeaderToLeader(msg *StateMachineMessage) {
 }
@@ -363,7 +372,10 @@ func (s *Server) ElectionToFollower(msg *StateMachineMessage) {
 }
 func (s *Server) ElectionToBecomeLeader(msg *StateMachineMessage) {
 	s.stateChan <- BECOME_LEADER
-	s.rm.SendMessage(message.NewElectionVictoryMessage([]string{}, []string{}, 0, []uint32{}))
+	s.mu.Lock()
+	delete(s.peers, msg.ElectionID)
+	s.mu.Unlock()
+	s.rm.SendMessage(message.NewElectionVictoryMessage(msg.ElectionID))
 	s.stateChan <- LEADER
 
 }
@@ -401,25 +413,31 @@ func (s *Server) isHighestID() bool {
 // requires s.mu to be locked
 func (s *Server) joinMulticastFromPeerInfo(umsg *unicast.Message) {
 	msg, _ := message.Decode(umsg.Message)
-	if s.rmPort != msg.MulticastPort {
-		if s.rm != nil {
-			s.rm.Shutdown()
-		}
-
-		if s.rmPort != msg.MulticastPort {
-			s.logger.Println("joinMulticastFromPeerInfo", msg.Clock)
-			s.rmPort = msg.MulticastPort
-			s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, msg.PeerIds, s.rmMsgChan)
-			go s.rm.StartListener()
-			return
-		}
-		s.logger.Println("joinMulticastFromPeerInfo", false, s.rmPort, msg.MulticastPort)
+	s.peers = make(map[string]string, len(msg.PeerIds))
+	for index, peerId := range msg.PeerIds {
+		s.peers[peerId] = msg.PeerIps[index]
 	}
+
+	// if s.rmPort != msg.MulticastPort {
+	if s.rm != nil {
+		s.rm.Shutdown()
+	}
+
+	if s.rmPort != msg.MulticastPort {
+		s.logger.Println("joinMulticastFromPeerInfo", msg.Clock)
+		s.rmPort = msg.MulticastPort
+		s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, msg.PeerIds, s.rmMsgChan)
+		go s.rm.StartListener()
+		return
+	}
+	s.logger.Println("joinMulticastFromPeerInfo", false, s.rmPort, msg.MulticastPort)
+	s.Debug()
+	// }
 	//port is same, then update the vector clock
 }
 
 func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
-	s.rm.AddNewNode(fromUUID)
+	// s.rm.AddNewNode(fromUUID)
 	// vc := s.rm.VectorClock()
 	s.mu.Lock()
 	s.peers[fromUUID] = fromIP
@@ -435,12 +453,21 @@ func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
 		peerIps = append(peerIps, ip)
 		clocks = append(clocks, 0)
 	}
-	rmPort := s.rmPort
+	leaderID := s.id
 	s.mu.Unlock()
+	randomPort, _ := getRandomUDPPort()
+	msChangeData := message.NewMulticastSessionChangeMessage(peerIds, peerIps, clocks, randomPort)
+	newMulticastSession := multicast.NewReliableMulticast(leaderID, randomPort, peerIds, s.rmMsgChan)
+	peerInfoData := message.NewPeerInfoMessage(peerIds, peerIps, randomPort, clocks)
 
-	encodedMessage := message.NewPeerInfoMessage(peerIds, peerIps, rmPort, clocks)
+	s.rm.SendMessage(msChangeData)
+	s.rm.Shutdown()
+	s.rm = newMulticastSession
+	s.rmPort = randomPort
+	go s.rm.StartListener()
+
 	s.logger.Println("sending message to", fromUUID)
-	send := s.ru.SendMessage(fromIP, fromUUID, encodedMessage)
+	send := s.ru.SendMessage(fromIP, fromUUID, peerInfoData)
 	if !send {
 		s.logger.Println("failed to send peer info to new node", fromIP)
 		s.mu.Lock()
@@ -448,11 +475,6 @@ func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
 		s.mu.Unlock()
 		return
 	}
-	go func(fromUUID string, fromIP string) {
-		time.Sleep(1000 * time.Millisecond)
-		s.logger.Println("sending multicast message", fromUUID)
-		s.rm.SendMessage(message.NewNewNodeMessage(fromUUID, fromIP))
-	}(fromUUID, fromIP)
 }
 
 // func (s *Server) StartElection() {
@@ -675,7 +697,7 @@ func (s *Server) handleDeadServer(uuid string) {
 		// if s.rm != nil {
 		// s.rm.HandleDeadNode(uuid)
 		// s.rm.RemoveDeadNode(uuid)
-		// s.rm.SendMessage(message.NewDeadNodeMessage(uuid, ip))
+		s.rm.SendMessage(message.NewDeadNodeMessage(uuid, ip))
 		// }
 		// 	return
 	}
@@ -700,7 +722,7 @@ func (s *Server) KillLeaderAfter(duration time.Duration) {
 }
 
 func (s *Server) KillFollowerAfter(duration time.Duration) {
-	if rand.IntN(10) < 6 {
+	if rand.IntN(10) < 7 {
 		s.logger.Println("Follower will not be killed")
 		return
 	}
@@ -709,14 +731,14 @@ func (s *Server) KillFollowerAfter(duration time.Duration) {
 		count := 0
 		time.Sleep(duration)
 		s.mu.Lock()
-		ip := s.ip
+		// ip := s.ip
 		state := s.state
 		s.mu.Unlock()
 		for {
 			if state == FOLLOWER {
 				count++
-				s.rm.SendMessage(message.NewApplicationMessage([]byte(fmt.Sprintf("%s: %d", ip, count))))
-				// s.logger.Fatal("Follower killed")
+				// s.rm.SendMessage(message.NewApplicationMessage([]byte(fmt.Sprintf("%s: %d", ip, count))))
+				s.logger.Fatal("Follower killed")
 				// s.logger.Printf("Follower killed")
 				// os.Exit(0)
 			}

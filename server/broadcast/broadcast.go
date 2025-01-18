@@ -37,11 +37,17 @@ type Message struct {
 }
 
 func NewBroadcaster(serverUUID string, serverIP string, broadcastIP string, msgChan chan<- *Message) *Broadcaster {
+	logger := log.New(os.Stdout, fmt.Sprintf("[%s][%s][Broadcaster]", serverIP, serverUUID[:4]), log.Ltime)
+	conn, err := net.ListenPacket("udp4", BROADCAST_L_PORT)
+	if err != nil {
+		logger.Panic(err)
+	}
 	return &Broadcaster{
 		id:              serverUUID,
 		ip:              serverIP,
 		broadcastIP:     broadcastIP,
 		msgChan:         msgChan,
+		conn:            conn,
 		internalMsgChan: make(chan *Message),
 		logger:          log.New(os.Stdout, fmt.Sprintf("[%s][%s][Broadcaster]", serverIP, serverUUID[:4]), log.Ltime),
 		quit:            make(chan interface{}),
@@ -49,153 +55,126 @@ func NewBroadcaster(serverUUID string, serverIP string, broadcastIP string, msgC
 	}
 }
 
-func (b *Broadcaster) StartListener() {
-	b.logger.Println("start listner")
-	go func() {
-		var err error
-		if b.quit == nil {
-			b.quit = make(chan interface{})
-		}
+func (b *Broadcaster) Shutdown() {
+	b.conn.Close()
+}
 
-		b.conn, err = net.ListenPacket("udp4", BROADCAST_L_PORT)
-		if err != nil {
-			b.logger.Panic(err)
-		}
-		defer b.conn.Close()
+// func (b *Broadcaster) StartListener() {
+// 	b.logger.Println("start listner")
+// 	go func() {
+// 		var err error
+// 		if b.quit == nil {
+// 			b.quit = make(chan interface{})
+// 		}
+//
+// 		b.conn, err = net.ListenPacket("udp4", BROADCAST_L_PORT)
+// 		if err != nil {
+// 			b.logger.Panic(err)
+// 		}
+// 		defer b.conn.Close()
+//
+// 		buf := make([]byte, 1024)
+//
+// 		for {
+// 			n, addr, err := b.conn.ReadFrom(buf)
+// 			if err != nil {
+// 				select {
+// 				case <-b.quit:
+// 					b.quit = nil
+// 					b.logger.Println("Broadcast Connection closed", n)
+// 					return
+// 				default:
+// 					b.conn.Close()
+// 					b.logger.Printf("Error reading from connection: %v\n", err)
+// 					return
+// 				}
+// 			}
+// 			udpAddr, ok := addr.(*net.UDPAddr)
+// 			if !ok {
+// 				b.logger.Printf("Unexpected address type: %T", addr)
+// 				continue
+// 			}
+//
+// 			// if broadcast from self, discard
+// 			if udpAddr.IP.String() == b.ip {
+// 				continue
+// 			}
+//
+// 			clientUUIDStr := string(buf[:n])
+// 			ip := udpAddr.IP.String()
+//
+// 			_, err = uuid.Parse(clientUUIDStr)
+// 			if err != nil {
+// 				log.Printf("Invalid UUID received from %s: %v\n", ip, err)
+// 				break
+// 			}
+//
+// 			if clientUUIDStr == b.id {
+// 				continue
+// 			}
+// 			b.mu.Lock()
+// 			listening := b.listening
+// 			log.Println("broadcast", clientUUIDStr[:4], listening)
+// 			b.mu.Unlock()
+// 			if listening {
+// 				b.internalMsgChan <- &Message{clientUUIDStr, ip}
+// 			}
+// 		}
+// 	}()
+// }
 
-		buf := make([]byte, 1024)
-
-		for {
+func (b *Broadcaster) listen(ch chan *Message, quit chan interface{}) {
+	buf := make([]byte, 1024)
+	for {
+		select {
+		case <-quit:
+			b.logger.Println("Broadcast Connection closed")
+			return
+		default:
 			n, addr, err := b.conn.ReadFrom(buf)
 			if err != nil {
-				select {
-				case <-b.quit:
-					b.quit = nil
-					b.logger.Println("Broadcast Connection closed", n)
-					return
-				default:
-					b.conn.Close()
-					b.logger.Printf("Error reading from connection: %v\n", err)
-					return
-				}
+				b.logger.Printf("Error reading from connection: %v\n", n, err)
+				return
 			}
 			udpAddr, ok := addr.(*net.UDPAddr)
 			if !ok {
 				b.logger.Printf("Unexpected address type: %T", addr)
 				continue
 			}
-
-			// if broadcast from self, discard
-			if udpAddr.IP.String() == b.ip {
-				continue
-			}
-
-			clientUUIDStr := string(buf[:n])
 			ip := udpAddr.IP.String()
-
+			clientUUIDStr := string(buf[:n])
 			_, err = uuid.Parse(clientUUIDStr)
 			if err != nil {
-				log.Printf("Invalid UUID received from %s: %v\n", ip, err)
-				break
+				log.Printf("Invalid UUID received from %s: %v\n", err)
+				continue
 			}
-
 			if clientUUIDStr == b.id {
 				continue
 			}
-			b.mu.Lock()
-			listening := b.listening
-			b.mu.Unlock()
-			if listening {
-				b.internalMsgChan <- &Message{clientUUIDStr, ip}
-			}
+			ch <- &Message{UUID: clientUUIDStr, IP: ip}
 		}
-	}()
-}
-
-func (b *Broadcaster) listeningToBroadcast() {
-	b.mu.Lock()
-	b.listening = true
-	b.logger.Println("set it as true")
-	b.mu.Unlock()
-}
-
-func (b *Broadcaster) notListeningToBroadcast() {
-	b.mu.Lock()
-	b.listening = false
-	b.mu.Unlock()
+	}
 }
 
 func (b *Broadcaster) IsAnyOneBroadcasting(duration time.Duration) (bool, *Message) {
-	b.listeningToBroadcast()
+	ch := make(chan *Message)
+	quit := make(chan interface{})
+	go b.listen(ch, quit)
 	t := time.NewTimer(duration)
 	defer t.Stop()
 	select {
 	case <-t.C:
-		b.notListeningToBroadcast()
+		close(quit)
 		return false, nil
-	case msg := <-b.internalMsgChan:
-		b.notListeningToBroadcast()
+	case msg := <-ch:
+		close(quit)
 		b.logger.Println("got broadcast", msg)
 		return true, msg
 	}
 }
 
-func (b *Broadcaster) StartIsAnotherLeaderBroadcasting(id string) *Message {
-	b.anotherLeaderQuit = make(chan interface{})
-	b.listeningToBroadcast()
-	for {
-		select {
-		case <-b.anotherLeaderQuit:
-			b.anotherLeaderQuit = nil
-			return nil
-		case msg := <-b.internalMsgChan:
-			if msg.UUID == id {
-				break
-			}
-			return msg
-		}
-	}
-}
-
-func (b *Broadcaster) StopIsAnotherLeaderBroadcasting() {
-	close(b.anotherLeaderQuit)
-	b.notListeningToBroadcast()
-}
-
-func (b *Broadcaster) StartHeartbeatListener(quit chan interface{}) {
-	b.anotherLeaderQuit = make(chan interface{})
-	b.listeningToBroadcast()
-	b.logger.Println("listening for broadcast hb")
-	go func() {
-		for {
-			select {
-			case <-quit:
-				b.notListeningToBroadcast()
-				return
-			case msg := <-b.internalMsgChan:
-				b.msgChan <- msg
-			}
-		}
-	}()
-}
-
-func (b *Broadcaster) HigherNodeBroadcasting(id string, msgChan chan *Message, quit chan interface{}) {
-	b.anotherLeaderQuit = make(chan interface{})
-	b.listeningToBroadcast()
-	b.logger.Println("listening for broadcast higher node")
-	go func() {
-		for {
-			select {
-			case <-quit:
-				b.notListeningToBroadcast()
-				return
-			case msg := <-b.internalMsgChan:
-				if msg.UUID > id {
-					msgChan <- msg
-				}
-			}
-		}
-	}()
+func (b *Broadcaster) StartBroadcastListener(msgChan chan *Message, quit chan interface{}) {
+	go b.listen(msgChan, quit)
 }
 
 func (b *Broadcaster) Start() {
@@ -260,12 +239,4 @@ func SendUDP(ip string, fromPort string, toPort string, data []byte) {
 		log.Panic(err)
 
 	}
-}
-
-func (b *Broadcaster) Shutdown() {
-	if b.quit != nil {
-		close(b.quit)
-		b.conn.Close()
-	}
-	b.Stop()
 }
