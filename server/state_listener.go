@@ -39,8 +39,8 @@ func (st *ServerStateListener) Start() {
 		st.LeaderStateStart()
 	case FOLLOWER:
 		st.FollowerStateStart()
-		// case BECOME_LEADER:
-		// 	st.BecomeLeaderStateStart()
+	case ELECTION:
+		st.ELectionStateStart()
 	}
 }
 
@@ -195,49 +195,58 @@ func (st *ServerStateListener) FollowerStateStart() {
 	}(msgChan)
 }
 
-// func (st *ServerStateListener) BecomeLeaderStateStart() {
-// 	// st.logger.Println("BecomeLeadeStateStart")
-// 	// vc := st.server.rm.VectorClock()
-// 	// st.logger.Println("VectorClockj")
-// 	st.server.mu.Lock()
-// 	st.logger.Println("server mu lock")
-// 	peerIds := make([]string, 0, len(st.server.peers))
-// 	peerIps := make([]string, 0, len(st.server.peers))
-// 	clocks := make([]uint32, 0, len(st.server.peers))
-//
-// 	rmPort := st.server.rmPort
-// 	for uuid, ip := range st.server.peers {
-// 		// clock, ok := vc[uuid]
-// 		// if !ok {
-// 		// 	st.logger.Panicf("failed to find frame count for uuid in vc: %s", uuid)
-// 		// }
-// 		peerIds = append(peerIds, uuid)
-// 		peerIps = append(peerIps, ip)
-// 		clocks = append(clocks, 0)
-// 	}
-// 	// var wg sync.WaitGroup
-//
-// 	for uuid, ip := range st.server.peers {
-// 		if uuid == st.server.id {
-// 			continue
-// 		}
-// 		go func(uuid string, ip string) {
-// 			// defer wg.Done()
-// 			victoryMessage := message.NewElectionVictoryMessage(peerIds, peerIps, rmPort, clocks)
-// 			st.server.logger.Println("sending election victory to", ip)
-// 			send := st.server.ru.SendMessage(ip, uuid, victoryMessage)
-// 			if !send {
-// 				// TODO: handle node failure
-// 				// s.handleDeadServer(uuid, ip)
-// 				log.Panic("TODO: failed to send victory message to ", ip)
-// 			}
-//
-// 			st.server.logger.Println("done sending", ip)
-// 		}(uuid, ip)
-// 	}
-// 	st.logger.Println("server mu unlocking")
-// 	st.server.mu.Unlock()
-//
-// 	st.logger.Println("server mu unlock")
-// 	st.server.sm.ChangeTo(LEADER, nil)
-// }
+func (st *ServerStateListener) ELectionStateStart() {
+	st.server.mu.Lock()
+	st.server.electionMap = map[string]bool{}
+	for uuid, ip := range st.server.peers {
+		if uuid != st.server.id && uuid > st.server.id {
+			st.server.electionMap[uuid] = false
+			go func(uuid string, ip string) {
+				st.server.logger.Println("sending election message to higher node", ip)
+				send := st.server.ru.SendMessage(ip, uuid, message.NewElectionMessage())
+				if send {
+					st.server.logger.Println("successfulyy send to", ip)
+					st.server.mu.Lock()
+					st.server.electionMap[uuid] = true
+					st.server.logger.Println("updated map", ip)
+					st.server.mu.Unlock()
+				}
+			}(uuid, ip)
+		}
+	}
+	st.server.mu.Unlock()
+
+	st.server.logger.Println("waiting for reply")
+	time.Sleep(1)
+	st.server.mu.Lock()
+	st.server.logger.Println("checking if we are still in election")
+	if st.server.state != ELECTION {
+		st.server.logger.Println("not in eleciton anymore", st.server.state, st.server.leaderID)
+		st.server.mu.Unlock()
+		return
+	}
+	recvdAliveFromHigherNode := false
+	for _, rcvd := range st.server.electionMap {
+		if rcvd {
+			st.server.logger.Println("higher node exists, waiting for election victory")
+			recvdAliveFromHigherNode = true
+			break
+		}
+	}
+	st.server.mu.Unlock()
+	if recvdAliveFromHigherNode {
+		st.server.logger.Println("recievd alive from higher node, waitin for one more second other wise going to election again")
+		time.Sleep(1)
+		st.server.mu.Lock()
+		if st.server.state == ELECTION {
+			st.server.mu.Unlock()
+			st.server.logger.Println("still in election restarting election")
+			st.server.sm.ChangeTo(ELECTION, nil)
+			return
+		}
+		st.server.mu.Unlock()
+		return
+	}
+	st.server.logger.Println("no other potential leader, becomeing leader")
+	st.server.sm.ChangeTo(BECOME_LEADER, nil)
+}

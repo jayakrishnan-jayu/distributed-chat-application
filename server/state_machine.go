@@ -60,18 +60,15 @@ func NewStateMachine(server ServerInterface) *StateMachine {
 	}
 
 	sm.transitions[LEADER] = map[State]Action{
-		INIT:     sm.server.LeaderToInit,
-		FOLLOWER: sm.server.LeaderToFollower,
+		INIT: sm.server.LeaderToInit,
 	}
 
 	sm.transitions[FOLLOWER] = map[State]Action{
-		BECOME_LEADER: sm.server.FollowerToBecomeLeader,
-		ELECTION:      sm.server.FollowerToElection,
-		FOLLOWER:      sm.server.FollowerToFollower,
+		ELECTION: sm.server.FollowerToElection,
+		FOLLOWER: sm.server.FollowerToFollower,
 	}
 	sm.transitions[BECOME_LEADER] = map[State]Action{
-		LEADER:   sm.server.BecomeLeaderToLeader,
-		FOLLOWER: sm.server.BecomeLeaderToFollower,
+		LEADER: sm.server.BecomeLeaderToLeader,
 	}
 	sm.transitions[ELECTION] = map[State]Action{
 		FOLLOWER:      sm.server.ElectionToFollower,

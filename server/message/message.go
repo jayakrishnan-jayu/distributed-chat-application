@@ -58,8 +58,8 @@ func NewElectionMessage() []byte {
 // 	return em
 // }
 
-func NewElectionVictoryMessage(OldLeaderID string) []byte {
-	em, err := Encode(Message{Type: ElectionVictory, OldLeaderID: OldLeaderID})
+func NewElectionVictoryMessage() []byte {
+	em, err := Encode(Message{Type: ElectionVictory})
 	if err != nil {
 		log.Panic(err)
 	}
@@ -151,10 +151,10 @@ func Encode(msg Message) ([]byte, error) {
 	}
 
 	if msg.Type == ElectionVictory {
-		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.OldLeaderID))); err != nil {
-			return nil, err
-		}
-		buf.WriteString(msg.OldLeaderID)
+		// if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.OldLeaderID))); err != nil {
+		// 	return nil, err
+		// }
+		// buf.WriteString(msg.OldLeaderID)
 		return buf.Bytes(), nil
 	}
 
@@ -237,17 +237,17 @@ func Decode(data []byte) (*Message, error) {
 		msg.IP = string(ip)
 	}
 
-	if msg.Type == ElectionVictory {
-		var idLen uint32
-		if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
-			return nil, err
-		}
-		id := make([]byte, idLen)
-		if _, err := reader.Read(id); err != nil {
-			return nil, err
-		}
-		msg.OldLeaderID = string(id)
-	}
+	// if msg.Type == ElectionVictory {
+	// var idLen uint32
+	// if err := binary.Read(reader, binary.BigEndian, &idLen); err != nil {
+	// 	return nil, err
+	// }
+	// id := make([]byte, idLen)
+	// if _, err := reader.Read(id); err != nil {
+	// 	return nil, err
+	// }
+	// msg.OldLeaderID = string(id)
+	// }
 
 	if msg.Type == MulticastSessionChange || msg.Type == PeerInfo {
 		var count uint32

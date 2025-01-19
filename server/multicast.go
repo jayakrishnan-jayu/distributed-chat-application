@@ -31,34 +31,7 @@ func (s *Server) StartMulticastMessageListener() {
 				break
 			}
 
-			// if state != FOLLOWER || state == INIT && decodedMsg.Type == message.PeerInfo {
-			// 	break
-			// }
-
 			switch decodedMsg.Type {
-			// case message.NewNode:
-			// 	s.logger.Println("new node from multicast", decodedMsg.UUID, decodedMsg.IP)
-			// 	s.mu.Lock()
-			// 	s.peers[decodedMsg.UUID] = decodedMsg.IP
-			// 	s.Debug()
-			// 	// s.rm.HandleDeadNode(decodedMsg.UUID)
-			// 	s.mu.Unlock()
-			// case message.MulticastSessionChange:
-			// 	s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
-			// 	s.mu.Lock()
-			// 	s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
-			// 	s.peers = make(map[string]string, len(decodedMsg.PeerIds))
-			// 	for index, id := range decodedMsg.PeerIds {
-			// 		s.peers[id] = decodedMsg.PeerIps[index]
-			// 	}
-			// 	newMulticastSession := multicast.NewReliableMulticast(s.id, decodedMsg.MulticastPort, decodedMsg.PeerIds, s.rmMsgChan)
-			// 	s.rm.Shutdown()
-			// 	s.rm = newMulticastSession
-			// 	s.rmPort = decodedMsg.MulticastPort
-			// 	s.mu.Unlock()
-			// 	go s.rm.StartListener()
-			// 	break
-
 			case message.DeadNode:
 				s.logger.Println("dead node from multicast", decodedMsg.UUID, decodedMsg.IP)
 				s.mu.Lock()
@@ -77,7 +50,7 @@ func (s *Server) StartMulticastMessageListener() {
 				s.logger.Println("new leaderIP", s.peers[s.leaderID], state)
 				if state == FOLLOWER || state == ELECTION {
 					s.leaderID = msg.UUID
-					delete(s.peers, decodedMsg.OldLeaderID)
+					// delete(s.peers, decodedMsg.OldLeaderID)
 					s.mu.Unlock()
 					s.sm.ChangeTo(FOLLOWER, nil)
 					break
