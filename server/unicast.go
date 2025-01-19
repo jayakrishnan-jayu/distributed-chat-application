@@ -2,6 +2,7 @@ package server
 
 import (
 	"dummy-rom/server/message"
+	"dummy-rom/server/multicast"
 	"dummy-rom/server/unicast"
 	"time"
 )
@@ -45,6 +46,21 @@ func (s *Server) startUnicastMessageListener() {
 			s.mu.Lock()
 			state := s.state
 			s.mu.Unlock()
+			if uMsg.Type == message.MulticastSessionChange {
+				s.logger.Println("connecting to new multicast", uMsg.MulticastPort, "in state", state)
+				s.mu.Lock()
+				s.logger.Println("connecting to new multicast", uMsg.MulticastPort)
+				s.peers = make(map[string]string, len(uMsg.PeerIds))
+				for index, id := range uMsg.PeerIds {
+					s.peers[id] = uMsg.PeerIps[index]
+				}
+				newMulticastSession := multicast.NewReliableMulticast(s.id, uMsg.MulticastPort, uMsg.PeerIds, s.rmMsgChan)
+				s.rm.Shutdown()
+				s.rm = newMulticastSession
+				s.rmPort = uMsg.MulticastPort
+				s.mu.Unlock()
+				go s.rm.StartListener()
+			}
 
 			switch state {
 			case BECOME_FOLLOWER:

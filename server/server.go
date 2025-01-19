@@ -188,7 +188,7 @@ func (s *Server) StartToInit(_ *StateMachineMessage) {
 	go s.StartMulticastMessageListener()
 	//
 	// // randomDuration := time.Duration(rand.IntN(4)+1) * time.Second
-	randomDuration := time.Duration(rand.IntN(6)+1) * time.Second
+	randomDuration := time.Duration(rand.IntN(6)+2) * time.Second
 	// randomDuration := time.Duration(0 * time.Second)
 	ok, msg := s.broadcaster.IsAnyOneBroadcasting(randomDuration)
 	emptyChannel(s.bMsgChan)
@@ -456,17 +456,7 @@ func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
 	leaderID := s.id
 	s.mu.Unlock()
 	randomPort, _ := getRandomUDPPort()
-	msChangeData := message.NewMulticastSessionChangeMessage(peerIds, peerIps, clocks, randomPort)
-	newMulticastSession := multicast.NewReliableMulticast(leaderID, randomPort, peerIds, s.rmMsgChan)
 	peerInfoData := message.NewPeerInfoMessage(peerIds, peerIps, randomPort, clocks)
-
-	s.rm.SendMessage(msChangeData)
-	s.rm.Shutdown()
-	s.rm = newMulticastSession
-	s.rmPort = randomPort
-	go s.rm.StartListener()
-
-	s.logger.Println("sending message to", fromUUID)
 	send := s.ru.SendMessage(fromIP, fromUUID, peerInfoData)
 	if !send {
 		s.logger.Println("failed to send peer info to new node", fromIP)
@@ -475,6 +465,22 @@ func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
 		s.mu.Unlock()
 		return
 	}
+
+	msChangeData := message.NewMulticastSessionChangeMessage(peerIds, peerIps, clocks, randomPort)
+	newMulticastSession := multicast.NewReliableMulticast(leaderID, randomPort, peerIds, s.rmMsgChan)
+	// s.rm.SendMessage(msChangeData)
+	for index, uuid := range peerIds {
+		if uuid == leaderID || uuid == fromUUID {
+			continue
+		}
+		go s.ru.SendMessage(peerIps[index], uuid, msChangeData)
+	}
+	s.rm.Shutdown()
+	s.rm = newMulticastSession
+	s.rmPort = randomPort
+	go s.rm.StartListener()
+
+	s.logger.Println("sending message to", fromUUID)
 }
 
 // func (s *Server) StartElection() {

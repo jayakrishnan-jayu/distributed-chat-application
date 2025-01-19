@@ -2,7 +2,6 @@ package server
 
 import (
 	"dummy-rom/server/message"
-	"dummy-rom/server/multicast"
 )
 
 func (s *Server) StartMulticastListener() {
@@ -44,21 +43,21 @@ func (s *Server) StartMulticastMessageListener() {
 			// 	s.Debug()
 			// 	// s.rm.HandleDeadNode(decodedMsg.UUID)
 			// 	s.mu.Unlock()
-			case message.MulticastSessionChange:
-				s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
-				s.mu.Lock()
-				s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
-				s.peers = make(map[string]string, len(decodedMsg.PeerIds))
-				for index, id := range decodedMsg.PeerIds {
-					s.peers[id] = decodedMsg.PeerIps[index]
-				}
-				newMulticastSession := multicast.NewReliableMulticast(s.id, decodedMsg.MulticastPort, decodedMsg.PeerIds, s.rmMsgChan)
-				s.rm.Shutdown()
-				s.rm = newMulticastSession
-				s.rmPort = decodedMsg.MulticastPort
-				s.mu.Unlock()
-				go s.rm.StartListener()
-				break
+			// case message.MulticastSessionChange:
+			// 	s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
+			// 	s.mu.Lock()
+			// 	s.logger.Println("connecting to new multicast", decodedMsg.MulticastPort)
+			// 	s.peers = make(map[string]string, len(decodedMsg.PeerIds))
+			// 	for index, id := range decodedMsg.PeerIds {
+			// 		s.peers[id] = decodedMsg.PeerIps[index]
+			// 	}
+			// 	newMulticastSession := multicast.NewReliableMulticast(s.id, decodedMsg.MulticastPort, decodedMsg.PeerIds, s.rmMsgChan)
+			// 	s.rm.Shutdown()
+			// 	s.rm = newMulticastSession
+			// 	s.rmPort = decodedMsg.MulticastPort
+			// 	s.mu.Unlock()
+			// 	go s.rm.StartListener()
+			// 	break
 
 			case message.DeadNode:
 				s.logger.Println("dead node from multicast", decodedMsg.UUID, decodedMsg.IP)

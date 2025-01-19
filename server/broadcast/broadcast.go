@@ -125,6 +125,7 @@ func (b *Broadcaster) Shutdown() {
 
 func (b *Broadcaster) listen(ch chan *Message, quit chan interface{}) {
 	buf := make([]byte, 1024)
+	b.logger.Println("New broadcast listener")
 	for {
 		select {
 		case <-quit:
