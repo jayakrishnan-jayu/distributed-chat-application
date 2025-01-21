@@ -20,6 +20,7 @@ import (
 
 const UNI_S_PORT = ":5002"
 const UNI_L_PORT = ":5003"
+const CLIENT_PORT = ":5006"
 
 type ServerInterface interface {
 	StartToInit(*StateMachineMessage)
@@ -41,21 +42,14 @@ type Server struct {
 	ip       string
 	leaderID string
 
-	leaderHeartbeatTimestamp time.Time
-	peerHeartbeatTimestamp   map[string]time.Time
-
-	state State
-
-	sm              *StateMachine
-	stateListener   StateListener
-	stateChan       chan State
-	stateChangeChan chan interface{}
-	logger          *log.Logger
+	sm            *StateMachine
+	state         State
+	stateListener StateListener
+	stateChan     chan State
+	logger        *log.Logger
 
 	hbSConn net.PacketConn
 	hbLConn net.PacketConn
-
-	leaderQuitChan chan interface{}
 
 	ru        *unicast.ReliableUnicast
 	ruMsgChan chan *unicast.Message
@@ -68,12 +62,14 @@ type Server struct {
 	broadcaster *broadcast.Broadcaster
 	bMsgChan    chan *broadcast.Message
 
-	peers           map[string]string
-	discoveredPeers map[string]bool
-	electionMap     map[string]bool
-	quit            chan interface{}
-	newServer       chan string
-	mu              sync.Mutex
+	applicationMsgChan chan string
+	clientMsgChan      chan string
+	clientServer       *ClientServer
+
+	peers       map[string]string
+	electionMap map[string]bool
+	quit        chan interface{}
+	mu          sync.Mutex
 }
 
 func NewServer() (*Server, error) {
@@ -122,7 +118,6 @@ func NewServer() (*Server, error) {
 	s.state = INIT
 	s.sm = NewStateMachine(s)
 	s.stateChan = make(chan State)
-	s.stateChangeChan = make(chan interface{})
 
 	s.hbSConn = hbSConn
 	s.hbLConn = hbLConn
@@ -143,14 +138,16 @@ func NewServer() (*Server, error) {
 	s.bMsgChan = bMsgChan
 	s.broadcaster = broadcast.NewBroadcaster(s.id, s.ip, broadcastIp.String(), bMsgChan)
 
+	s.applicationMsgChan = make(chan string, 10)
+	s.clientMsgChan = make(chan string, 10)
+
 	s.peers = make(map[string]string)
-	s.discoveredPeers = make(map[string]bool)
-	s.newServer = make(chan string, 5)
 	s.quit = make(chan interface{})
 
 	s.peers[s.id] = s.ip
 
 	s.stateListener = NewStateListener(START, s)
+	s.clientServer = NewClientServer(s.id, s.clientMsgChan, s.applicationMsgChan, s, s.getRandomPeerID)
 	s.logger.Println("Current ID: ", s.id)
 
 	return s, nil
@@ -173,6 +170,7 @@ func (s *Server) Run() {
 			}
 		}
 	}()
+	s.clientServer.Start()
 	s.sm.ChangeTo(INIT, nil)
 }
 
@@ -181,7 +179,7 @@ func (s *Server) StartToInit(_ *StateMachineMessage) {
 	go s.ru.StartListener()
 	go s.rm.StartListener()
 	go s.startUnicastMessageListener()
-	go s.StartMulticastMessageListener()
+	go s.StartMulticastListener()
 
 	// // randomDuration := time.Duration(rand.IntN(4)+1) * time.Second
 	randomDuration := time.Duration(rand.IntN(6)+2) * time.Second
@@ -377,10 +375,24 @@ func (s *Server) handleDeadServer(uuid string) {
 	if ok {
 		s.logger.Println("handling dead node", uuid, ip)
 		delete(s.peers, uuid)
-		delete(s.discoveredPeers, uuid)
 		s.rm.SendMessage(message.NewDeadNodeMessage(uuid, ip))
 	}
 	s.mu.Unlock()
+}
+
+func (s *Server) getRandomPeerID() string {
+	s.mu.Lock()
+	n := rand.IntN(len(s.peers))
+	i := 0
+	for _, ip := range s.peers {
+		if i == n {
+			s.mu.Unlock()
+			return ip
+		}
+		i++
+	}
+	s.mu.Unlock()
+	return ""
 }
 
 func (s *Server) KillLeaderAfter(duration time.Duration) {
@@ -428,6 +440,7 @@ func (s *Server) Shutdown() {
 	s.mu.Lock()
 	close(s.quit)
 	s.broadcaster.Shutdown()
+	s.clientServer.Shutdown()
 	s.rm.Shutdown()
 	s.ru.Shutdown()
 	s.mu.Unlock()
@@ -435,7 +448,7 @@ func (s *Server) Shutdown() {
 
 func getRandomUDPPort() (uint32, error) {
 	for i := 0; i < 20; i++ {
-		port := rand.IntN(65535-49152+1) + 49152
+		port := rand.IntN(65535-5010+1) + 5010
 		addr := fmt.Sprintf(":%d", port)
 		conn, err := net.ListenPacket("udp4", addr)
 		if err == nil {

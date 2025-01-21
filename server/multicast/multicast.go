@@ -138,6 +138,9 @@ func (m *ReliableMulticast) SendMessage(data []byte) bool {
 		log.Fatal(err)
 	}
 	m.logger.Println("send multicast")
+	foo, _ := decodeMulticastMessage(encodedData, "foo")
+	deocdedData, _ := message.Decode(foo.Message)
+	m.logger.Println("send multicast", deocdedData.Type)
 	return true
 
 }

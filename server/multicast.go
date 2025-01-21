@@ -2,14 +2,38 @@ package server
 
 import (
 	"dummy-rom/server/message"
+	"time"
 )
 
 func (s *Server) StartMulticastListener() {
-	go s.StartMulticastMessageListener()
+	go s.startMulticastMessageListener()
+	go s.startMutlicastSender()
 	// s.rm.StartListener()
 }
 
-func (s *Server) StartMulticastMessageListener() {
+func (s *Server) startMutlicastSender() {
+	for {
+		select {
+		case <-s.quit:
+			return
+		case msg := <-s.clientMsgChan:
+			for {
+				s.mu.Lock()
+				state := s.state
+				s.mu.Unlock()
+				if state != LEADER && state != FOLLOWER {
+					s.logger.Println("holding messages until node is a leader or a follower")
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				break
+			}
+			s.rm.SendMessage(message.NewApplicationMessage([]byte(msg)))
+		}
+	}
+}
+
+func (s *Server) startMulticastMessageListener() {
 	s.logger.Println("started multicast message listner")
 	for {
 		select {
@@ -36,7 +60,6 @@ func (s *Server) StartMulticastMessageListener() {
 				s.logger.Println("dead node from multicast", decodedMsg.UUID, decodedMsg.IP)
 				s.mu.Lock()
 				delete(s.peers, decodedMsg.UUID)
-				delete(s.discoveredPeers, decodedMsg.UUID)
 				// s.rm.HandleDeadNode(decodedMsg.UUID)
 				s.mu.Unlock()
 				break
@@ -60,6 +83,7 @@ func (s *Server) StartMulticastMessageListener() {
 				break
 			case message.Application:
 				s.logger.Println("\tApplicationMSG: ", string(decodedMsg.Msg))
+				s.applicationMsgChan <- string(decodedMsg.Msg)
 				break
 
 			case message.PeerInfo:
