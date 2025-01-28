@@ -19,12 +19,14 @@ const (
 	NewNode
 	PeerInfo
 	MulticastSessionChange
+	MulticastAck
 )
 
 type Message struct {
 	Type          MessageType
 	UUID          string
 	IP            string
+	Frame         uint32
 	Msg           []byte
 	PeerIds       []string
 	PeerIps       []string
@@ -122,6 +124,14 @@ func NewPeerInfoMessage(PeerIds []string, PeerIps []string, MulticastPort uint32
 	return em
 }
 
+func NewMulticastAckMessage(frame uint32) []byte {
+	em, err := Encode(Message{Type: MulticastAck, Frame: frame})
+	if err != nil {
+		log.Panic(err)
+	}
+	return em
+}
+
 func Encode(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -132,11 +142,20 @@ func Encode(msg Message) ([]byte, error) {
 		return buf.Bytes(), nil
 	}
 
+	if msg.Type == MulticastAck {
+		if err := binary.Write(&buf, binary.BigEndian, uint32(msg.Frame)); err != nil {
+			return nil, err
+		}
+		buf.Write(msg.Msg)
+		return buf.Bytes(), nil
+	}
+
 	if msg.Type == Application {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(len(msg.Msg))); err != nil {
 			return nil, err
 		}
 		buf.Write(msg.Msg)
+		return buf.Bytes(), nil
 	}
 
 	if msg.Type == DeadNode || msg.Type == NewNode {
@@ -204,6 +223,14 @@ func Decode(data []byte) (*Message, error) {
 		return msg, nil
 	}
 
+	if msg.Type == MulticastAck {
+
+		if err := binary.Read(reader, binary.BigEndian, &msg.Frame); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+
 	if msg.Type == Application {
 
 		var msgLen uint32
@@ -214,6 +241,7 @@ func Decode(data []byte) (*Message, error) {
 		if _, err := reader.Read(msg.Msg); err != nil {
 			return nil, err
 		}
+		return msg, nil
 	}
 
 	if msg.Type == DeadNode || msg.Type == NewNode {

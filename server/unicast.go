@@ -49,12 +49,16 @@ func (s *Server) startUnicastMessageListener() {
 				for index, id := range uMsg.PeerIds {
 					s.peers[id] = uMsg.PeerIps[index]
 				}
-				newMulticastSession := multicast.NewReliableMulticast(s.id, uMsg.MulticastPort, uMsg.PeerIds, s.rmMsgChan)
+				newMulticastSession := multicast.NewReliableMulticast(s.id, uMsg.MulticastPort, uMsg.PeerIds, uMsg.PeerIps, s.rmMsgChan, s.ru)
 				s.rm.Shutdown()
 				s.rm = newMulticastSession
 				s.rmPort = uMsg.MulticastPort
 				s.mu.Unlock()
 				go s.rm.StartListener()
+			}
+
+			if uMsg.Type == message.MulticastAck {
+				s.rm.OnAck(msg.FromUUID, uMsg.Frame)
 			}
 
 			if uMsg.Type == message.Election {

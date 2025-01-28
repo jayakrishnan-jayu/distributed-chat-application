@@ -79,7 +79,7 @@ func (st *ServerStateListener) LeaderStateStart() {
 		}
 		st.server.mu.Unlock()
 
-		t := time.NewTimer(5 * time.Second)
+		t := time.NewTimer(2 * time.Second)
 		for {
 			select {
 			case <-st.quit:

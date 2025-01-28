@@ -111,8 +111,6 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		log.Panic(err)
 	}
-	peers := make([]string, 1)
-	peers[0] = id.String()
 
 	s := new(Server)
 	s.state = INIT
@@ -132,7 +130,7 @@ func NewServer() (*Server, error) {
 	s.ru = unicast.NewReliableUnicast(ruMsgChan, s.id, uniSenderConn, uniListnerConn)
 
 	s.rmMsgChan = rmMsgChan
-	s.rm = multicast.NewReliableMulticast(s.id, randomPort, peers, rmMsgChan)
+	s.rm = multicast.NewReliableMulticast(s.id, randomPort, []string{s.id}, []string{s.ip}, rmMsgChan, s.ru)
 	s.rmPort = randomPort
 
 	s.bMsgChan = bMsgChan
@@ -321,7 +319,7 @@ func (s *Server) joinMulticastFromPeerInfo(umsg *unicast.Message) {
 	if s.rmPort != msg.MulticastPort {
 		s.logger.Println("joinMulticastFromPeerInfo", msg.Clock)
 		s.rmPort = msg.MulticastPort
-		s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, msg.PeerIds, s.rmMsgChan)
+		s.rm = multicast.NewReliableMulticast(s.id, s.rmPort, msg.PeerIds, msg.PeerIps, s.rmMsgChan, s.ru)
 		go s.rm.StartListener()
 		return
 	}
@@ -354,7 +352,7 @@ func (s *Server) connectToLeaderHandler(fromUUID string, fromIP string) {
 	}
 
 	msChangeData := message.NewMulticastSessionChangeMessage(peerIds, peerIps, clocks, randomPort)
-	newMulticastSession := multicast.NewReliableMulticast(leaderID, randomPort, peerIds, s.rmMsgChan)
+	newMulticastSession := multicast.NewReliableMulticast(leaderID, randomPort, peerIds, peerIps, s.rmMsgChan, s.ru)
 	for index, uuid := range peerIds {
 		if uuid == leaderID || uuid == fromUUID {
 			continue
@@ -375,6 +373,7 @@ func (s *Server) handleDeadServer(uuid string) {
 	if ok {
 		s.logger.Println("handling dead node", uuid, ip)
 		delete(s.peers, uuid)
+		s.rm.RemoveDeadNode(uuid)
 		s.rm.SendMessage(message.NewDeadNodeMessage(uuid, ip))
 	}
 	s.mu.Unlock()

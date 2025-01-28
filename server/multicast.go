@@ -28,6 +28,9 @@ func (s *Server) startMutlicastSender() {
 				}
 				break
 			}
+			if len(msg) == 0 {
+				msg = " "
+			}
 			s.rm.SendMessage(message.NewApplicationMessage([]byte(msg)))
 		}
 	}
