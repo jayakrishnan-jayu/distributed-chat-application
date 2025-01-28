@@ -11,6 +11,7 @@ import (
 
 type ClientServer struct {
 	id     string
+	ip     string
 	logger *log.Logger
 
 	clientListner      net.Listener
@@ -23,13 +24,14 @@ type ClientServer struct {
 	getRandomPeerID    func() string
 }
 
-func NewClientServer(uuid string, clientMsgChan chan string, applicationMsgChan chan string, server *Server, getRandomPeerID func() string) *ClientServer {
+func NewClientServer(uuid string, ip string, clientMsgChan chan string, applicationMsgChan chan string, server *Server, getRandomPeerID func() string) *ClientServer {
 	clientListner, err := net.Listen("tcp", CLIENT_PORT)
 	if err != nil {
 		log.Panic(err)
 	}
 	return &ClientServer{
 		id:                 uuid,
+		ip:                 ip,
 		logger:             log.New(os.Stdout, fmt.Sprintf("[%s][clientserver] ", uuid[:4]), log.Ltime),
 		clientListner:      clientListner,
 		clientMsgChan:      clientMsgChan,
@@ -46,7 +48,7 @@ func (s *ClientServer) Shutdown() {
 
 func (s *ClientServer) Start() {
 	go func() {
-		// ownID := s.id
+		ownIP := s.ip
 		s.logger.Println("starting client listner")
 		for {
 			select {
@@ -73,8 +75,9 @@ func (s *ClientServer) Start() {
 				}
 				if state == LEADER {
 					// s.logger.Println(n, n > 1, randomPeerID, ownID)
-					if n > 1 {
-						randomPeerID := s.getRandomPeerID()
+					randomPeerID := s.getRandomPeerID()
+					s.logger.Println(randomPeerID[:4], ownIP[:4])
+					if n > 1 && randomPeerID != ownIP {
 						s.logger.Println("writing peerid", randomPeerID)
 						conn.Write([]byte(randomPeerID))
 						conn.Close()

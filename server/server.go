@@ -145,7 +145,7 @@ func NewServer() (*Server, error) {
 	s.peers[s.id] = s.ip
 
 	s.stateListener = NewStateListener(START, s)
-	s.clientServer = NewClientServer(s.id, s.clientMsgChan, s.applicationMsgChan, s, s.getRandomPeerID)
+	s.clientServer = NewClientServer(s.id, s.ip, s.clientMsgChan, s.applicationMsgChan, s, s.getRandomPeerID)
 	s.logger.Println("Current ID: ", s.id)
 
 	return s, nil
