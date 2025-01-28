@@ -103,7 +103,7 @@ func NewReliableMulticast(id string, port uint32, peerIds []string, peerIps []st
 
 func (m *ReliableMulticast) OnAck(uuid string, frame uint32) {
 	m.logger.Println("OnAck", frame, uuid)
-	time.Sleep(1 * time.Second)
+	// time.Sleep(1 * time.Second)
 	m.mu.Lock()
 	_, ok := m.bufferAck[frame][uuid]
 	if ok {

@@ -63,7 +63,7 @@ func (s *ClientServer) Start() {
 				}
 				s.server.mu.Lock()
 				state := s.server.state
-				// n := len(s.server.peers)
+				n := len(s.server.peers)
 				s.server.mu.Unlock()
 				// don't accept client connectoin if server is neither a leader nor a follower
 				if state != LEADER && state != FOLLOWER {
@@ -71,16 +71,16 @@ func (s *ClientServer) Start() {
 					conn.Close()
 					break
 				}
-				// if state == LEADER {
-				// 	randomPeerID := s.getRandomPeerID()
-				// 	s.logger.Println(n, n > 1, randomPeerID, ownID)
-				// 	if n > 1 && randomPeerID != ownID {
-				// 		s.logger.Println("writing peerid", randomPeerID)
-				// 		conn.Write([]byte(randomPeerID))
-				// 		conn.Close()
-				// 		break
-				// 	}
-				// }
+				if state == LEADER {
+					// s.logger.Println(n, n > 1, randomPeerID, ownID)
+					if n > 1 {
+						randomPeerID := s.getRandomPeerID()
+						s.logger.Println("writing peerid", randomPeerID)
+						conn.Write([]byte(randomPeerID))
+						conn.Close()
+						break
+					}
+				}
 				go s.handleConn(conn)
 			}
 		}
